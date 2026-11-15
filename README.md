@@ -9,7 +9,7 @@
 ## 快速开始
 
 ```powershell
-git clone <this-repo> docs-lint
+git clone https://github.com/cixia6944-cloud/docs-lint.git docs-lint
 cd docs-lint
 pwsh -NoProfile -File tools/demo.ps1
 ```
