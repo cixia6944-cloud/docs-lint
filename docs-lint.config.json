@@ -1,0 +1,59 @@
+{
+  "_说明": "docs-lint 的分类与检查规则。categories 按数组顺序匹配，第一个命中的分类生效；请把 catch-all（\"*\"）放在最后。",
+  "_匹配": "match 里的模式是 PowerShell 通配符，对相对仓库根目录、用 / 分隔的路径匹配；* 可以跨目录。",
+  "_日期策略": "sourced=日期必须有上下文来源；free=日期不受限；ignore=不检查日期。",
+  "_坏了会怎样": "配置缺失、解析失败、categories 为空、分类缺少 name/match、datePolicy 非法时，工具直接 exit 1，不会退回内置规则。",
+  "categories": [
+    {
+      "name": "fixture",
+      "match": ["fixtures/*"],
+      "datePolicy": "ignore",
+      "checkBadWords": false
+    },
+    {
+      "name": "history",
+      "match": ["history/*", "archive/*", "历史/*", "*/history/*", "*/archive/*", "*/历史/*"],
+      "datePolicy": "free",
+      "checkBadWords": false,
+      "warnIfNoDate": true
+    },
+    {
+      "name": "data",
+      "match": ["data/*", "数据/*", "*/data/*", "*/数据/*"],
+      "datePolicy": "free",
+      "checkBadWords": false
+    },
+    {
+      "name": "troubleshooting",
+      "match": ["troubleshooting/*", "排障/*", "*/troubleshooting/*", "*/排障/*"],
+      "datePolicy": "free",
+      "checkBadWords": false
+    },
+    {
+      "name": "meta",
+      "match": ["README.md", "AGENTS.md", "TODO.md", "CHANGELOG.md", "CONTRIBUTING.md", "tools/*", "audit/*"],
+      "datePolicy": "ignore",
+      "checkBadWords": false
+    },
+    {
+      "name": "current",
+      "match": ["*"],
+      "datePolicy": "sourced",
+      "checkBadWords": true,
+      "warnIfDateDense": true
+    }
+  ],
+  "dateRules": {
+    "_说明": "这些是启发式判据，按你的文档习惯改。headerLines 是文件头部区域的行数。",
+    "headerLines": 15,
+    "headerMarkers": ["更新", "最后更新", "版本", "updated", "last updated", "date", "created"],
+    "verifyWords": ["实测", "验证", "复测", "verified", "tested"],
+    "allowTableRows": true,
+    "allowPathDates": true,
+    "allowInlineCode": true,
+    "allowBlockquoteHeader": true
+  },
+  "dateCap": 8,
+  "untracked": "error",
+  "rulesFile": "audit/rules.json"
+}
