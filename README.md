@@ -46,7 +46,8 @@ pwsh -NoProfile -File tools/audit-docs.ps1 -Repo . -Config path/to/config.json
 1. **分类**：按路径 glob 把每篇文档分到 `current`、`history`、`data` 等类别。
 2. **违规词**：`checkBadWords` 为 true 的类别，用 `audit/rules.json` 的词表检查历史叙述词。
 3. **日期来源**：`datePolicy: sourced` 的类别，日期必须出现在允许的上下文里（文件头标记、验证行、表格、路径、行内代码）。
-4. **未跟踪文件**：内容照扫，并单独报一条 `untracked`，提醒你 `git add` 或加进 `.gitignore`。
+4. **证据与残留**：检查没有证据锚的完成性表述、正文 TODO、以及指向不存在文件或行号的引用。
+5. **未跟踪文件**：内容照扫，并单独报一条 `untracked`，提醒你 `git add` 或加进 `.gitignore`。
 
 `-FactPack <path>` 会把 `coverage / findings / totals` 写成稳定 JSON；`-Baseline <path>` 按稳定 id 对比上一份事实包，`-FailOnNew` 只对新增 finding 阻断。
 
@@ -105,6 +106,23 @@ pwsh -NoProfile -File tools/selftest.ps1
   },
   "dateStyle": "warn",
   "dateCap": 8,
+  "blockOn": "all",
+  "rules": {
+    "claimUnsupported": {
+      "severity": "warn",
+      "claims": ["已修复", "验证过", "done"],
+      "commands": ["pwsh", "git", "curl"]
+    },
+    "todoResidue": {
+      "severity": "error",
+      "words": ["TODO", "FIXME", "待补"],
+      "allowTodoFiles": ["TODO.md", "AGENTS.md"]
+    },
+    "staleReference": {
+      "severity": "error",
+      "extensions": [".md", ".ps1", ".py", ".sh", ".json"]
+    }
+  },
   "untracked": "error",
   "rulesFile": "audit/rules.json"
 }
@@ -163,6 +181,21 @@ pwsh -NoProfile -File tools/selftest.ps1
 ### `dateCap`
 
 日期密度阈值，默认 8。达到阈值只发 warn，不阻断。它表达的是一个经验判断：**一篇现状文档里日期越来越多，通常说明它正在变成变更记录，该把历史部分拆出去了**。密度本身不是错误，所以不拦。
+
+### `blockOn`
+
+控制哪些 error 会让进程退出 1：
+
+- `fact`（默认）：只有事实型 error 阻断，启发式 error 在 FactPack 中降级为 warn；
+- `all`：所有 error 都阻断。
+
+### `rules`
+
+三条证据与残留规则都由 `rules` 配置驱动，`severity` 支持 `off`、`warn`、`error`。
+
+- `claimUnsupported.claims` 是完成性表述词表，`commands` 是可作证据锚的命令词表。规则只作用于 `datePolicy: sourced` 的分类，代码块内不判。同/下一行有 URL、`文件:行`、7-40 位十六进制 commit、行内命令，或紧邻代码块至少两行输出时视为有证据。
+- `todoResidue.words` 是正文待办词表；`allowTodoFiles` 默认允许 `TODO.md` 和 `AGENTS.md` 承载待办。
+- `staleReference.extensions` 是要检查的仓库相对路径扩展名。文件不存在或 `文件:行` 的行号超出实际范围会报；URL、绝对路径、占位符写法和仓库外路径跳过。
 
 ### `untracked`
 

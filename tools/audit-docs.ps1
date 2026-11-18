@@ -306,6 +306,81 @@ try {
     $dateCap = 8
     if ($null -ne $configDoc.dateCap) { $dateCap = [int]$configDoc.dateCap }
 
+    function Get-ConfigSeverity($obj, [string]$name, [string]$fallback) {
+        if ($null -eq $obj) { return $fallback }
+        $property = $obj.PSObject.Properties[$name]
+        if ($null -eq $property -or $null -eq $property.Value) { return $fallback }
+        $value = ([string]$property.Value).ToLowerInvariant()
+        if (@('off', 'warn', 'error') -notcontains $value) {
+            Fail "配置里的 $name 无效：$value（只允许 off/warn/error）"
+        }
+        return $value
+    }
+
+    # ---------- 证据与残留规则 ----------
+    $rulesConfig = $configDoc.rules
+    $claimConfig = if ($rulesConfig) { $rulesConfig.claimUnsupported } else { $null }
+    $todoConfig = if ($rulesConfig) { $rulesConfig.todoResidue } else { $null }
+    $staleConfig = if ($rulesConfig) { $rulesConfig.staleReference } else { $null }
+    $claimSeverity = Get-ConfigSeverity $claimConfig 'severity' 'warn'
+    $todoSeverity = Get-ConfigSeverity $todoConfig 'severity' 'error'
+    $staleSeverity = Get-ConfigSeverity $staleConfig 'severity' 'error'
+
+    $claimWords = @('已完成', '已修复', '已部署', '已上线', '实测通过', '验证过', '已解决', 'done', 'fixed', 'shipped')
+    if ($claimConfig -and $claimConfig.claims) {
+        $claimWords = @($claimConfig.claims | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
+    }
+    $claimCommands = @('pwsh', 'git', 'curl', 'systemctl', 'docker', 'python', 'npm', 'dotnet')
+    if ($claimConfig -and $claimConfig.commands) {
+        $claimCommands = @($claimConfig.commands | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
+    }
+    $todoWords = @('TODO', 'FIXME', 'XXX', '待补', '待确认', '暂未实现', '占位符')
+    if ($todoConfig -and $todoConfig.words) {
+        $todoWords = @($todoConfig.words | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
+    }
+    $allowTodoFiles = @('TODO.md', 'AGENTS.md')
+    if ($todoConfig -and $todoConfig.allowTodoFiles) {
+        $allowTodoFiles = @($todoConfig.allowTodoFiles | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Replace('\', '/') })
+    }
+    $staleExtensions = @('.md', '.ps1', '.py', '.sh', '.json', '.yml', '.yaml', '.txt')
+    if ($staleConfig -and $staleConfig.extensions) {
+        $staleExtensions = @($staleConfig.extensions | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).ToLowerInvariant() })
+    }
+    if (@($claimWords).Count -eq 0) { Fail "rules.claimUnsupported.claims 不能为空" }
+    if (@($claimCommands).Count -eq 0) { Fail "rules.claimUnsupported.commands 不能为空" }
+    if (@($todoWords).Count -eq 0) { Fail "rules.todoResidue.words 不能为空" }
+    if (@($staleExtensions).Count -eq 0) { Fail "rules.staleReference.extensions 不能为空" }
+
+    function Join-WordPattern([string[]]$Words) {
+        return (($Words | ForEach-Object { '(?<![\p{L}\p{N}])' + [regex]::Escape($_) + '(?![\p{L}\p{N}])' }) -join '|')
+    }
+    $reClaim = Join-WordPattern $claimWords
+    $reClaimCommand = Join-WordPattern $claimCommands
+    $reTodo = Join-WordPattern $todoWords
+    $extensionAlt = (($staleExtensions | ForEach-Object { [regex]::Escape($_) }) -join '|')
+    $pathCharClass = '[a-z0-9_.\-\p{L}\p{N}]'
+    $reStaleReference = '(?i)(?<![a-z0-9_)(\[])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + ')(?::(\d+))?(?![a-z0-9_)\]])'
+    $reStaleLineReference = '(?i)(?<![a-z0-9_])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + '):(\d+)(?![a-z0-9_])'
+
+    function Test-ClaimEvidence([string]$CurrentLine, [string]$NextLine, [string[]]$Lines, [int]$NextIndex) {
+        $evidenceLines = @($CurrentLine, $NextLine) | Where-Object { $_ }
+        foreach ($evidenceLine in $evidenceLines) {
+            if ($evidenceLine -match '(?i)https?://') { return $true }
+            if ($evidenceLine -match '(?i)(?<![a-z0-9_])(?:[a-z0-9_.\-]+/)*[a-z0-9_.\-]+\.[a-z0-9]+:\d+(?![a-z0-9_])') { return $true }
+            if ($evidenceLine -match '(?i)\b[0-9a-f]{7,40}\b') { return $true }
+            if ($evidenceLine -match ('`[^`]*(?:' + $reClaimCommand + ')[^`]*`')) { return $true }
+        }
+        if ($NextLine -and ($NextLine.TrimStart().StartsWith('```') -or $NextLine.TrimStart().StartsWith('~~~'))) {
+            $fenceChar = if ($NextLine.TrimStart().StartsWith('```')) { '```' } else { '~~~' }
+            for ($j = $NextIndex + 1; $j -lt $Lines.Count; $j++) {
+                if ($Lines[$j].TrimStart().StartsWith($fenceChar)) { break }
+                if ($Lines[$j] -match ('(?:' + $reClaimCommand + ')')) { return $true }
+                if ($j + 1 -lt $Lines.Count -and $Lines[$j + 1].Trim()) { return $true }
+            }
+        }
+        return $false
+    }
+
     $blockOn = if ($configDoc.blockOn) { ([string]$configDoc.blockOn).ToLowerInvariant() } else { 'fact' }
     if (@('fact', 'all') -notcontains $blockOn) {
         Fail "配置里的 blockOn 无效：$blockOn（只允许 fact/all）"
@@ -325,7 +400,7 @@ try {
         return $null
     }
 
-    $factRules = @('missing-on-disk', 'untracked', 'encoding-suspect', 'no-category')
+    $factRules = @('missing-on-disk', 'untracked', 'encoding-suspect', 'no-category', 'todo-residue', 'stale-reference')
     function Get-FindingKind([string]$Rule) {
         if ($factRules -contains $Rule) { return 'fact' }
         return 'heuristic'
@@ -344,6 +419,43 @@ try {
             'untracked' { return 'git ls-files --error-unmatch -- "' + ($File -replace '"', '`"') + '"' }
             'no-category' { return 'Select-String -Path "' + $configPath + '" -Pattern "categories"' }
             'date-style' { return 'Select-String -Path "' + $File + '" -Pattern "' + (($Detail -split ' → ')[0] -replace '"', '`"') + '"' }
+            'claim-unsupported' {
+                if ($Detail -match '「(?<claim>[^」]+)」') {
+                    return 'Select-String -Path "' + $File + '" -Pattern "' + ($matches.claim -replace '"', '`"') + '"'
+                }
+            }
+            'todo-residue' {
+                if ($Detail -match '「(?<word>[^」]+)」') {
+                    return 'Select-String -Path "' + $File + '" -Pattern "' + ($matches.word -replace '"', '`"') + '"'
+                }
+            }
+            'stale-reference' {
+                if ($Detail -match '「(?<reference>[^」]+?)」') {
+                    $reference = $matches.reference
+                    if ($reference -match ':\d+$') {
+                        return 'Select-String -Path "' + $File + '" -Pattern "' + ($reference -replace '"', '`"') + '"'
+                    }
+                    return 'Test-Path -LiteralPath "' + ($reference -replace '"', '`"') + '"'
+                }
+            }
+        }
+        return $null
+    }
+
+    function Get-FindingFix([string]$Rule, [string]$Detail) {
+        switch ($Rule) {
+            'badword' { return '把历史叙述改成现状描述；确需保留时间线时移动到 history 分类' }
+            'date-nosource' { return '在行内补来源，或把日期移到文件头的 updated/created 元数据' }
+            'date-style' { return (($Detail -split ' → ')[1]) }
+            'date-density' { return '把变更记录拆到 history 文档，保留当前指南里的稳定结论' }
+            'history-no-date' { return '补一个事件日期，或把文件移到有日期规范的分类' }
+            'claim-unsupported' { return '把可复现命令及其输出、来源文件:行或 commit hash 加到这一行或紧邻下一行' }
+            'todo-residue' { return '完成这个待办并把标记删除，或把条目移到 TODO.md' }
+            'stale-reference' { return '把路径改成实际存在的文件和行号，或删除这条引用' }
+            'no-category' { return '为这个路径补一条分类 match，或加一个明确的 catch-all（*）' }
+            'missing-on-disk' { return '恢复文件，或从 git 索引里移除这条记录' }
+            'untracked' { return 'git add 这个文件；若不该入库则加入 .gitignore' }
+            'encoding-suspect' { return '把文件转成严格 UTF-8 后重新检查' }
         }
         return $null
     }
@@ -419,26 +531,28 @@ try {
         $lines = $text -split "`r?`n"
         $linesScanned += $lines.Count
         $dateHits = 0
-        $inFence = $false
-        $fenceMarker = $null
-
-        for ($i = 0; $i -lt $lines.Length; $i++) {
-            $line = $lines[$i]
-            # 代码块里是示例输出/命令，日期是数据不是叙事，跳过
-            $trimmedFence = $line.TrimStart()
-            if (-not $inFence) {
-                if ($trimmedFence.StartsWith('```')) { $fenceMarker = '```' }
-                elseif ($trimmedFence.StartsWith('~~~')) { $fenceMarker = '~~~' }
-                if ($fenceMarker) {
-                    $inFence = $true
-                    continue
-                }
-            } elseif ($fenceMarker -and $trimmedFence.StartsWith($fenceMarker)) {
-                $inFence = $false
-                $fenceMarker = $null
+        $contentLines = New-Object System.Collections.Generic.List[string]
+        $contentLineNumbers = New-Object System.Collections.Generic.List[int]
+        $contentFences = New-Object System.Collections.Generic.List[string]
+        for ($j = 0; $j -lt $lines.Count; $j++) {
+            $candidate = $lines[$j]
+            if ($contentFences.Count -eq 0) {
+                $trimmed = $candidate.TrimStart()
+                if ($trimmed.StartsWith('```')) { $contentFences.Add('```') }
+                elseif ($trimmed.StartsWith('~~~')) { $contentFences.Add('~~~') }
+                if ($contentFences.Count -gt 0) { continue }
+            } elseif ($candidate.TrimStart().StartsWith($contentFences[$contentFences.Count - 1])) {
+                $contentFences.RemoveAt($contentFences.Count - 1)
                 continue
             }
-            if ($inFence) { continue }
+            if ($contentFences.Count -eq 0) {
+                $contentLines.Add($candidate)
+                $contentLineNumbers.Add($j + 1)
+            }
+        }
+        for ($i = 0; $i -lt $contentLines.Count; $i++) {
+            $line = $contentLines[$i]
+            $realLineNumber = $contentLineNumbers[$i]
             if (-not $line) { continue }
 
             $isHeader = ($i -lt $headerLines)
@@ -452,11 +566,67 @@ try {
 
             if ($cat.CheckBadWords -and $line -match $reBadWords) {
                 [void]$issues.Add([pscustomobject]@{
-                        Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'badword'
+                        Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'badword'
                         Message  = '出现历史叙述词'
                         Detail   = ($line.Trim() -replace '\s+', ' ')
                     })
                 continue
+            }
+
+            if ($todoSeverity -ne 'off' -and $allowTodoFiles -notcontains $rel -and ($line -match $reTodo)) {
+                $todoWord = $matches[0]
+                $todoItem = [pscustomobject]@{
+                    Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'todo-residue'
+                    Message  = '正文里残留待办标记'
+                    Detail   = "「$todoWord」仍留在正文；应完成、删除或移到 TODO.md"
+                }
+                if ($todoSeverity -eq 'error') { [void]$issues.Add($todoItem) } else { [void]$warnings.Add([pscustomobject]@{ File = $rel; Line = $realLineNumber; Rule = 'todo-residue'; Detail = $todoItem.Detail }) }
+            }
+
+            if ($staleSeverity -ne 'off') {
+                foreach ($referenceMatch in [regex]::Matches($line, $reStaleReference)) {
+                    if ($referenceMatch.Groups[1].Success) { continue }
+                    $prefix = $line.Substring(0, $referenceMatch.Index)
+                    if ($prefix -match '(?i)(?:https?://|[<>*/](?:[^`)]*)$)') { continue }
+                    if ($prefix -match '[A-Za-z]:$') { continue }
+                    if ($referenceMatch.Value -match '[<>*]') { continue }
+                    if ($referenceMatch.Value -match '(?i)https?://') { continue }
+                    $reference = $referenceMatch.Value
+                    $target = Join-Path $repo $reference
+                    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                        [void]$issues.Add([pscustomobject]@{
+                                Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
+                                Message  = '引用的路径不存在'
+                                Detail   = "「$reference」不存在；改成实际文件，或删除这条引用"
+                            })
+                    }
+                }
+                foreach ($referenceMatch in [regex]::Matches($line, $reStaleLineReference)) {
+                    $reference = $referenceMatch.Value
+                    $referencePath = $reference.Substring(0, $reference.LastIndexOf(':'))
+                    $target = Join-Path $repo $referencePath
+                    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                        [void]$issues.Add([pscustomobject]@{
+                                Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
+                                Message  = '引用的路径不存在'
+                                Detail   = "「$reference」不存在；改成实际文件，或删除这条引用"
+                            })
+                        continue
+                    }
+                    try {
+                        $referencedLines = @([IO.File]::ReadAllLines($target, [Text.Encoding]::UTF8))
+                    } catch {
+                        $referencedLines = @()
+                    }
+                    $referencedLine = [int]$referenceMatch.Groups[1].Value
+                    if ($referencedLine -gt $referencedLines.Count) {
+                        [void]$issues.Add([pscustomobject]@{
+                                Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
+                                Message  = '引用的行号超出文件范围'
+                                Detail   = "「$reference」超过实际 $($referencedLines.Count) 行；改成存在的行号，或去掉行号"
+                            })
+                    }
+                }
             }
 
             $allowed = $false
@@ -473,7 +643,7 @@ try {
                         $canonical = ConvertTo-CanonicalDate $styleMatch.Value
                         $detail = if ($canonical) { "$($styleMatch.Value) → $canonical" } else { "无法转换日期写法：$($styleMatch.Value)" }
                         $item = [pscustomobject]@{
-                            Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'date-style'
+                            Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'date-style'
                             Message  = '日期写法需要统一'
                             Detail   = $detail
                         }
@@ -481,10 +651,29 @@ try {
                             [void]$issues.Add($item)
                         } else {
                             [void]$warnings.Add([pscustomobject]@{
-                                    File = $rel; Line = ($i + 1); Rule = 'date-style'
+                                    File = $rel; Line = $realLineNumber; Rule = 'date-style'
                                     Detail = $detail
                                 })
                         }
+                    }
+                }
+            }
+
+            if ($claimSeverity -ne 'off' -and $cat.DatePolicy -eq 'sourced' -and ($line -match $reClaim)) {
+                $claim = $matches[0]
+                $nextIndex = $realLineNumber
+                $nextLine = if ($nextIndex -lt $lines.Count) { $lines[$nextIndex] } else { $null }
+                if (-not (Test-ClaimEvidence $line $nextLine $lines $nextIndex)) {
+                    $claimDetail = "这条声称「$claim」，但没有命令输出 / 文件:行 / commit 作为证据"
+                    $claimFix = "把可复现命令及其输出、来源文件:行或 commit hash 加到这一行或紧邻下一行"
+                    if ($claimSeverity -eq 'error') {
+                        [void]$issues.Add([pscustomobject]@{
+                                Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'claim-unsupported'
+                                Message  = '完成性表述缺少证据锚'
+                                Detail   = $claimDetail
+                            })
+                    } else {
+                        [void]$warnings.Add([pscustomobject]@{ File = $rel; Line = $realLineNumber; Rule = 'claim-unsupported'; Detail = $claimDetail })
                     }
                 }
             }
@@ -502,7 +691,7 @@ try {
 
             if (-not $allowed) {
                 [void]$issues.Add([pscustomobject]@{
-                        Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'date-nosource'
+                        Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'date-nosource'
                         Message  = '该分类文档里有无来源的日期'
                         Detail   = ($line.Trim() -replace '\s+', ' ')
                     })
@@ -557,7 +746,7 @@ try {
             line     = [int]$i.Line
             message  = $i.Message
             detail   = $i.Detail
-            fix      = $null
+            fix      = (Get-FindingFix $i.Rule $i.Detail)
             verify   = (Get-FindingVerify $i.Rule $i.File ([int]$i.Line) $i.Detail)
         })
     }
@@ -572,8 +761,8 @@ try {
             line     = [int]$w.Line
             message  = $w.Rule
             detail   = $w.Detail
-            fix      = $null
-            verify   = $null
+            fix      = (Get-FindingFix $w.Rule $w.Detail)
+            verify   = (Get-FindingVerify $w.Rule $w.File ([int]$w.Line) $w.Detail)
         })
     }
     $factFindings = @($factFindings | Sort-Object file, line, rule, id)
@@ -602,7 +791,7 @@ try {
         }
     }
     if ($FactPack) {
-        $rulesRun = @('badword', 'date-nosource', 'date-style', 'date-density', 'untracked', 'no-category', 'missing-on-disk', 'encoding-suspect')
+        $rulesRun = @('badword', 'date-nosource', 'date-style', 'date-density', 'untracked', 'no-category', 'missing-on-disk', 'encoding-suspect', 'claim-unsupported', 'todo-residue', 'stale-reference') | Sort-Object
         $payload = [ordered]@{
             schema_version = 1
             tool           = 'audit-docs'

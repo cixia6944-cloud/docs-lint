@@ -208,6 +208,8 @@ This history file has no date at all.
     Set-FixtureFile $bad 'date-style.md' @'
 # Date style
 
+已修复，但没有任何证据。
+
 The current guide was verified on 03/05/2026.
 
 2026/03/05 是无来源且写法不规范的日期。
@@ -220,8 +222,43 @@ The current guide was verified on 03/05/2026.
 
 ~~~text
 波浪围栏里的 2026/03/05 不判。
-```不应关闭波浪围栏。
 ~~~
+'@
+    Set-FixtureFile $bad 'todo-residue.md' @'
+# TODO residue
+
+这段内容待补。
+'@
+    Set-FixtureFile $bad 'TODO.md' @'
+# TODO
+
+这里允许写：待补。
+'@
+    Set-FixtureFile $bad 'vps/README.md' @'
+# VPS
+
+Reference target.
+'@
+    Set-FixtureFile $bad 'stale-reference.md' @'
+# Stale reference
+
+引用了不存在的 vps/不存在.md。
+真实的 vps/README.md:1。
+vps/README.md:99999 行号越界。
+跳过 https://example.com/vps/不存在.md 和 C:/tmp/不存在.md。
+`<vps/不存在.md>` 是占位符。
+'@
+    Set-FixtureFile $bad 'claim-evidence.md' @'
+# Evidence
+
+已修复：git log 里的 0123456789abcdef。
+已修复：https://example.com/deploy-log
+已修复：guide.md:3
+已修复，下面是命令输出：
+```text
+ok
+done
+```
 '@
     $encodingFile = Join-Path $bad 'encoding-suspect.md'
     Write-Utf16Fixture $encodingFile "This file is intentionally not UTF-8.`n"
@@ -258,6 +295,14 @@ The current guide was verified on 03/05/2026.
     Check 'audit-docs：未跟踪文件的内容也扫了' ($r.Text -match 'draft-untracked\.md') $r.Text
     Check 'audit-docs：历史缺日期给了提示' ($r.Text -match '没有任何日期') $r.Text
     Check 'audit-docs：表格里的日期没有误报' ($r.Text -notmatch 'table dates are allowed') $r.Text
+    Check 'audit-docs：报出无证据的完成性表述' ($r.Text -match '这条声称「已修复」') $r.Text
+    Check 'audit-docs：报出正文待办残留' ($r.Text -match 'todo-residue') $r.Text
+    Check 'audit-docs：TODO.md 允许待办' ($r.Text -notmatch 'TODO\.md .*待补') $r.Text
+    Check 'audit-docs：报出不存在的文件引用' ($r.Text -match 'vps/不存在\.md') $r.Text
+    Check 'audit-docs：真实文件引用不报' ($r.Text -notmatch 'vps/README\.md:1') $r.Text
+    Check 'audit-docs：报出引用行号越界' ($r.Text -match 'vps/README\.md:99999') $r.Text
+    Check 'audit-docs：URL、绝对路径和占位符引用不报' ($r.Text -notmatch 'https://example\.com|C:/tmp|是占位符') $r.Text
+    Check 'audit-docs：有证据的完成性表述不报' ($r.Text -notmatch 'git log 里的|deploy-log|guide\.md:3|下面是命令输出') $r.Text
 
     # ── 3) 配置/词表坏了必须 exit 1，不许假绿 ─────────────────────
     Write-Host "`n  ── 配置与判据失败（必须 exit 1，不许退回内置规则）──" -ForegroundColor Cyan
@@ -361,6 +406,14 @@ The current guide was verified on 03/05/2026.
     Check 'blockOn=fact：heuristic error 降级 warn 且 exit 0' ($rFact.Code -eq 0 -and $factObj -and @($factObj.findings | Where-Object { $_.kind -eq 'heuristic' -and $_.severity -eq 'warn' }).Count -gt 0) $rFact.Text
     $rAll = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config)
     Check 'blockOn=all：heuristic error 维持阻断' ($rAll.Code -eq 1) ("exit=$($rAll.Code) " + $rAll.Text)
+
+    $bPack = Join-Path $root 'rules-pack.json'
+    $rB = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $bPack)
+    $bObj = $null
+    try { $bObj = Get-Content -LiteralPath $bPack -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    $rulesRunText = @($bObj.coverage.rules_run) -join ','
+    Check 'FactPack：三条新规则进入 rules_run' ($rulesRunText -match '(^|,)claim-unsupported(,|$)' -and $rulesRunText -match '(^|,)todo-residue(,|$)' -and $rulesRunText -match '(^|,)stale-reference(,|$)') $bPack
+    Check 'FactPack：新规则有可执行 verify 和具体 fix' (@($bObj.findings | Where-Object { $_.rule -in @('claim-unsupported', 'todo-residue', 'stale-reference') -and ($_.verify -or $_.fix) }).Count -ge 3) $bPack
 
     # ── 5) check-secrets：中文名、值不外泄、-Staged、-Exclude ──────
     Write-Host "`n  ── check-secrets（编码 / 输出 / 范围）──" -ForegroundColor Cyan

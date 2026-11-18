@@ -56,6 +56,25 @@
   "_日期格式": "dateStyle 控制可疑日期写法：默认 warn 只提示；要阻断改成 error；off 不检查。只作用于 sourced 分类；分类级 checkDateStyle=true/false 可单独开关。",
   "dateStyle": "warn",
   "dateCap": 8,
+  "rules": {
+    "claimUnsupported": {
+      "_说明": "sourced 分类里出现 claims 中的完成性表述时，要求同/下一行有 commands、文件:行、commit、URL 或紧邻代码块输出作为证据锚。",
+      "severity": "warn",
+      "claims": ["已完成", "已修复", "已部署", "已上线", "实测通过", "验证过", "已解决", "done", "fixed", "shipped"],
+      "commands": ["pwsh", "git", "curl", "systemctl", "docker", "python", "npm", "dotnet"]
+    },
+    "todoResidue": {
+      "_说明": "正文残留待办标记就报；allowTodoFiles 是允许承载待办的文件名单。",
+      "severity": "error",
+      "words": ["TODO", "FIXME", "XXX", "待补", "待确认", "暂未实现", "占位符"],
+      "allowTodoFiles": ["TODO.md", "AGENTS.md"]
+    },
+    "staleReference": {
+      "_说明": "检查文档里的仓库相对文件引用；文件不存在或行号超出实际范围就报。",
+      "severity": "error",
+      "extensions": [".md", ".ps1", ".py", ".sh", ".json", ".yml", ".yaml", ".txt"]
+    }
+  },
   "_阻断策略": "blockOn=fact 是默认值，只有事实型 error 阻断，启发式 error 只输出；all 则所有 error 都阻断。",
   "blockOn": "all",
   "untracked": "error",
