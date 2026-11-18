@@ -10,7 +10,7 @@
 
     预期结果：
       good   -> exit 0
-      bad    -> exit 1（违规词 + 无来源日期 + 未跟踪草稿）
+      bad    -> exit 1（违规词 + 无来源日期 + 日期格式 + 编码可疑 + 未跟踪草稿）
       secrets-> exit 1（fixtures/bad 里的假口令）
 
 .PARAMETER Keep
@@ -44,6 +44,9 @@ $config = Join-Path $repo 'docs-lint.config.json'
 $audit = Join-Path $toolsDir 'audit-docs.ps1'
 $secrets = Join-Path $toolsDir 'check-secrets.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('docs-lint-demo-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$emptyGitConfig = Join-Path $root 'empty-git-config'
+$emptyGitExclude = Join-Path $root 'empty-git-exclude'
+$oldGitConfigGlobal = $env:GIT_CONFIG_GLOBAL
 
 function New-DemoRepo {
     param([string]$Name)
@@ -57,6 +60,7 @@ function New-DemoRepo {
         & git config user.name 'docs-lint demo'
         & git config core.quotepath false
         & git config core.autocrlf false
+        & git config core.excludesFile $emptyGitExclude
         & git add -A
         # 故意留一个未跟踪文件，演示「内容照扫 + 单独报 untracked」
         if (Test-Path -LiteralPath 'draft-untracked.md') {
@@ -68,6 +72,9 @@ function New-DemoRepo {
 
 try {
     New-Item -ItemType Directory -Force -Path $root | Out-Null
+    [IO.File]::WriteAllText($emptyGitConfig, '', (New-Object Text.UTF8Encoding $false))
+    [IO.File]::WriteAllText($emptyGitExclude, '', (New-Object Text.UTF8Encoding $false))
+    $env:GIT_CONFIG_GLOBAL = $emptyGitConfig
     $good = New-DemoRepo 'good'
     $bad = New-DemoRepo 'bad'
 
@@ -108,6 +115,7 @@ try {
     }
     if ($ok) { exit 0 } else { exit 1 }
 } finally {
+    $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal
     if (-not $Keep -and (Test-Path -LiteralPath $root)) {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }

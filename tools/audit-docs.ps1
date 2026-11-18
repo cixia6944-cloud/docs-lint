@@ -17,6 +17,7 @@
                               表格行
                               指向 .md 的路径
                               行内代码里的日期
+                              不认识的日期写法会报 date-style，而不是当成没有日期
       datePolicy = free     日期不受限；可开 warnIfNoDate 提示「一个日期都没有」
       datePolicy = ignore   不检查日期
 
@@ -31,6 +32,10 @@
       git ls-files 只列已入库的文件。新写的文档在 git add 之前既不在历史里、也不进
       备份，而且很容易被检查器漏掉。这里两者都处理：内容照扫，另记一条 untracked
       逼你先 add（或加进 .gitignore 明确表示不该入库）。行为由配置的 untracked 控制。
+
+    编码
+      Markdown 必须能按严格 UTF-8 解码。解码失败会报 encoding-suspect，
+      该文件不参与后续内容检查，避免把乱码当成「没问题」。
 
     退出码
       0  干净
@@ -228,6 +233,8 @@ try {
     }
 
     $reDate = '20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?|20\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)|20\d{2}\s*年\s*\d{1,2}\s*月'
+    $reSuspectDate = '(?<!\d)(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/20\d{2}(?!\d)|(?<!\d)20\d{2}/(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])(?!\d)|(?<!\d)(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.20\d{2}(?!\d)|(?<!\d)20\d{2}-(?:[1-9]|1[0-2])(?:-(?:[1-9]|[12]\d|3[01]))?(?!\d)|(?<!\d)(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?,?\s+20\d{2}(?!\d)|(?<!\d)(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?,?\s+20\d{2}(?!\d)'
+    $reAnyDate = '(?:' + $reDate + ')|(?:' + $reSuspectDate + ')'
     $reHeaderMark = $null
     if ($headerMarkers.Count -gt 0) {
         $markerAlt = ($headerMarkers | ForEach-Object { [regex]::Escape($_) }) -join '|'
@@ -306,7 +313,19 @@ try {
         }
 
         $stats[$cat.Name] = [int]$stats[$cat.Name] + 1
-        $lines = [IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)
+        $bytes = [IO.File]::ReadAllBytes($path)
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        try {
+            $text = $strictUtf8.GetString($bytes)
+        } catch {
+            [void]$issues.Add([pscustomobject]@{
+                    Category = $cat.Name; File = $rel; Line = 0; Rule = 'encoding-suspect'
+                    Message  = '文件不是严格 UTF-8'
+                    Detail   = '疑似其他编码；先转成 UTF-8，再让工具检查内容，避免乱码被静默当成合规'
+                })
+            continue
+        }
+        $lines = $text -split "`r?`n"
         $dateHits = 0
         $inFence = $false
 
@@ -319,14 +338,24 @@ try {
 
             $isHeader = ($i -lt $headerLines)
             $isTable = $line.TrimStart().StartsWith('|')
-            $hasDate = $line -match $reDate
-            if ($hasDate) { $dateHits += [regex]::Matches($line, $reDate).Count }
+            $dateMatches = [regex]::Matches($line, $reAnyDate, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $hasDate = $dateMatches.Count -gt 0
+            if ($hasDate) { $dateHits += $dateMatches.Count }
 
             if ($cat.CheckBadWords -and $line -match $reBadWords) {
                 [void]$issues.Add([pscustomobject]@{
                         Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'badword'
                         Message  = '出现历史叙述词'
                         Detail   = ($line.Trim() -replace '\s+', ' ')
+                    })
+                continue
+            }
+
+            if ($cat.DatePolicy -eq 'sourced' -and $line -match $reSuspectDate) {
+                [void]$issues.Add([pscustomobject]@{
+                        Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'date-style'
+                        Message  = '日期写法不是工具支持的规范格式'
+                        Detail   = "统一改成 YYYY-MM-DD 或 YYYY年M月后再检查来源：$($line.Trim() -replace '\s+', ' ')"
                     })
                 continue
             }
@@ -450,7 +479,7 @@ try {
         Write-Host ("  " + $_.Name) -ForegroundColor White
         $_.Group | Sort-Object Line | ForEach-Object {
             $loc = if ($_.Line -gt 0) { "L$($_.Line)" } else { "--" }
-            Write-Host ("      {0,-6} {1}" -f $loc, $_.Message) -ForegroundColor DarkYellow
+            Write-Host ("      {0,-6} [{1}] {2}" -f $loc, $_.Rule, $_.Message) -ForegroundColor DarkYellow
             if ($_.Detail) { Write-Host ("             {0}" -f $_.Detail.Substring(0, [Math]::Min(96, $_.Detail.Length))) -ForegroundColor DarkGray }
         }
     }

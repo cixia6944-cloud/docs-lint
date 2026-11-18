@@ -8,7 +8,7 @@
     这个脚本在 %TEMP% 下造一次性样例库，跑完删掉，不碰真实文档：
 
       1) 干净样例必须 exit 0
-      2) 坏样例必须 exit 1，并且命中预期的那几条（违规词、无来源日期、未跟踪 .md）
+      2) 坏样例必须 exit 1，并且命中预期的那几条（违规词、无来源日期、date-style、encoding-suspect、未跟踪 .md）
       3) 配置/词表缺失、解析失败、为空、正则非法、没有匹配分类，都必须 exit 1，
          不允许静默退回内置规则
       4) check-secrets 必须能扫到中文文件名，且不把命中的原文打印出来
@@ -102,6 +102,11 @@ function Write-JsonFile {
     [IO.File]::WriteAllText($Path, $Text, (New-Object Text.UTF8Encoding $false))
 }
 
+function Write-Utf16Fixture {
+    param([string]$Path, [string]$Text)
+    [IO.File]::WriteAllText($Path, $Text, [Text.Encoding]::Unicode)
+}
+
 function New-FixtureRepo {
     param([string]$Root, [string]$Name)
     $p = Join-Path $Root $Name
@@ -111,11 +116,18 @@ function New-FixtureRepo {
     Invoke-Git $p @('config', 'user.name', 'docs-lint selftest') | Out-Null
     Invoke-Git $p @('config', 'core.quotepath', 'false') | Out-Null
     Invoke-Git $p @('config', 'core.autocrlf', 'false') | Out-Null
+    Invoke-Git $p @('config', 'core.excludesFile', $emptyGitExclude) | Out-Null
     return $p
 }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('docs-lint-selftest-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force -Path $root | Out-Null
+$emptyGitConfig = Join-Path $root 'empty-git-config'
+$emptyGitExclude = Join-Path $root 'empty-git-exclude'
+[IO.File]::WriteAllText($emptyGitConfig, '', (New-Object Text.UTF8Encoding $false))
+[IO.File]::WriteAllText($emptyGitExclude, '', (New-Object Text.UTF8Encoding $false))
+$oldGitConfigGlobal = $env:GIT_CONFIG_GLOBAL
+$env:GIT_CONFIG_GLOBAL = $emptyGitConfig
 Write-Host ""
 Write-Host "  样例目录：$root" -ForegroundColor DarkGray
 
@@ -173,6 +185,13 @@ History notes may carry dates without further context.
 
 This history file has no date at all.
 '@
+    Set-FixtureFile $bad 'date-style.md' @'
+# Date style
+
+The current guide was verified on 03/05/2026.
+'@
+    $encodingFile = Join-Path $bad 'encoding-suspect.md'
+    Write-Utf16Fixture $encodingFile "This file is intentionally not UTF-8.`n"
     Set-FixtureFile $bad 'draft-untracked.md' @'
 # Draft
 
@@ -193,6 +212,9 @@ This history file has no date at all.
     Check 'audit-docs：坏样例 exit 1' ($r.Code -eq 1) ("exit=$($r.Code) " + $r.Text)
     Check 'audit-docs：报出违规词' ($r.Text -match '曾经') $r.Text
     Check 'audit-docs：报出无来源日期' ($r.Text -match '无来源的日期') $r.Text
+    Check 'audit-docs：报出不支持的日期格式' ($r.Text -match 'date-style') $r.Text
+    Check 'audit-docs：报出编码可疑的文件' ($r.Text -match 'encoding-suspect') $r.Text
+    Check 'audit-docs：编码可疑文件不再当内容检查' ($r.Text -notmatch 'intentionally not UTF-8') $r.Text
     Check 'audit-docs：报出未跟踪的 .md' ($r.Text -match '未跟踪的 \.md') $r.Text
     Check 'audit-docs：未跟踪文件的内容也扫了' ($r.Text -match 'draft-untracked\.md') $r.Text
     Check 'audit-docs：历史缺日期给了提示' ($r.Text -match '没有任何日期') $r.Text
@@ -293,6 +315,7 @@ This history file has no date at all.
     Write-Host ("全部通过：{0} 项" -f $script:passCount) -ForegroundColor Green
     exit 0
 } finally {
+    $env:GIT_CONFIG_GLOBAL = $oldGitConfigGlobal
     if ($KeepFixture) {
         Write-Host "  样例保留：$root" -ForegroundColor DarkGray
     } elseif (Test-Path -LiteralPath $root) {
