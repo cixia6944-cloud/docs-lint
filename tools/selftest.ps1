@@ -248,6 +248,13 @@ vps/README.md:99999 行号越界。
 跳过 https://example.com/vps/不存在.md 和 C:/tmp/不存在.md。
 `<vps/不存在.md>` 是占位符。
 '@
+    Set-FixtureFile $bad 'docs/nested/current.md' @'
+# Relative references
+
+[存在](../../vps/README.md)
+[缺失](../../vps/missing.md)
+[越界](../../../etc/passwd)
+'@
     Set-FixtureFile $bad 'claim-evidence.md' @'
 # Evidence
 
@@ -307,6 +314,9 @@ done
     Check 'audit-docs：报出引用行号越界' ($r.Text -match 'vps/README\.md:99999') $r.Text
     Check 'audit-docs：URL、绝对路径和占位符引用不报' ($r.Text -notmatch 'https://example\.com|C:/tmp|是占位符') $r.Text
     Check 'audit-docs：有证据的完成性表述不报' ($r.Text -notmatch 'git log 里的|deploy-log|guide\.md:3|下面是命令输出') $r.Text
+    Check 'audit-docs：上级相对链接不崩且真实文件不报' ($r.Text -notmatch 'vps/README\.md」不存在') $r.Text
+    Check 'audit-docs：上级相对缺失链接报归一化路径' ($r.Text -match 'vps/missing\.md」不存在') $r.Text
+    Check 'audit-docs：越界引用跳过且不误报' ($r.Text -notmatch 'etc/passwd') $r.Text
 
     # ── 3) 配置/词表坏了必须 exit 1，不许假绿 ─────────────────────
     Write-Host "`n  ── 配置与判据失败（必须 exit 1，不许退回内置规则）──" -ForegroundColor Cyan
@@ -381,6 +391,7 @@ done
     Check 'FactPack：schema_version=1 且 findings 排序稳定' ([bool]($facts -and $facts.schema_version -eq 1 -and $facts.tool -eq 'audit-docs')) $r1.Text
     Check 'FactPack：没有时间戳或耗时字段' ((Get-Content -LiteralPath $fact1 -Raw -Encoding UTF8) -notmatch 'generated_at|elapsed|duration') $fact1
     Check 'FactPack：coverage 与 totals 齐全' ([bool]($facts -and $facts.coverage.files_total -gt 0 -and $facts.coverage.lines_scanned -gt 0 -and $null -ne $facts.totals.by_severity.error)) $fact1
+    Check 'FactPack：files_scanned 不被引用级 skipped 吃掉' ($facts.coverage.files_scanned -eq ($facts.coverage.files_total - @($facts.coverage.files_skipped | Where-Object { $_.reason -eq 'encoding-suspect' }).Count)) $fact1
 
     $baseline1 = Join-Path $root 'baseline-1.json'
     $baseline2 = Join-Path $root 'baseline-2.json'

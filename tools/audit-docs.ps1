@@ -359,7 +359,7 @@ try {
     $reTodo = Join-WordPattern $todoWords
     $extensionAlt = (($staleExtensions | ForEach-Object { [regex]::Escape($_) }) -join '|')
     $pathCharClass = '[a-z0-9_.\-\p{L}\p{N}]'
-    $reStaleReference = '(?i)(?<![a-z0-9_)(\[])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + ')(?::(\d+))?(?![a-z0-9_)\]])'
+    $reStaleReference = '(?i)(?<![a-z0-9_\[])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + ')(?::(\d+))?(?![a-z0-9_\]])'
     $reStaleLineReference = '(?i)(?<![a-z0-9_])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + '):(\d+)(?![a-z0-9_])'
 
     function Test-ClaimEvidence([string]$CurrentLine, [string]$NextLine, [string[]]$Lines, [int]$NextIndex) {
@@ -460,6 +460,60 @@ try {
         return $null
     }
 
+    function Resolve-RepoReference {
+        param(
+            [string]$SourceRel,
+            [string]$Reference
+        )
+
+        $repoFull = [IO.Path]::GetFullPath($repo)
+        $sourceFull = [IO.Path]::GetFullPath((Join-Path $repo $SourceRel))
+        $sourceDir = Split-Path -Parent $sourceFull
+        $repoPrefix = $repoFull.TrimEnd('\') + '\'
+
+        try {
+            $target = [IO.Path]::GetFullPath((Join-Path $sourceDir $Reference))
+        } catch {
+            return [pscustomobject]@{ State = 'invalid'; Target = $null; RepoRelative = $null }
+        }
+        if (-not $target.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ State = 'outside'; Target = $null; RepoRelative = $null }
+        }
+
+        $repoRelative = $target.Substring($repoPrefix.Length).Replace('\', '/')
+        try {
+            if (Test-Path -LiteralPath $target -PathType Leaf) {
+                return [pscustomobject]@{ State = 'found'; Target = $target; RepoRelative = $repoRelative }
+            }
+        } catch {
+            return [pscustomobject]@{ State = 'invalid'; Target = $null; RepoRelative = $repoRelative }
+        }
+
+        try {
+            $target = [IO.Path]::GetFullPath((Join-Path $repo $Reference))
+        } catch {
+            return [pscustomobject]@{ State = 'invalid'; Target = $null; RepoRelative = $repoRelative }
+        }
+        if (-not $target.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ State = 'missing'; Target = $null; RepoRelative = $repoRelative }
+        }
+
+        $repoRelative = $target.Substring($repoPrefix.Length).Replace('\', '/')
+        try {
+            if (Test-Path -LiteralPath $target -PathType Leaf) {
+                return [pscustomobject]@{ State = 'found'; Target = $target; RepoRelative = $repoRelative }
+            }
+        } catch {
+            return [pscustomobject]@{ State = 'invalid'; Target = $null; RepoRelative = $repoRelative }
+        }
+        return [pscustomobject]@{ State = 'missing'; Target = $null; RepoRelative = $repoRelative }
+    }
+
+    function Add-ReferenceSkip {
+        param([string]$Reason)
+        [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = $Reason })
+    }
+
     # git 吐的是 UTF-8。core.quotepath=false 防止中文名变成 "\344\270\255"，
     # 临时切到 UTF-8 防止宿主 [Console]::OutputEncoding=gb2312 把中文名解成乱码。
     # 两条路都会让 Test-Path 落空，于是文件被静默跳过 —— 那是最难发现的假绿。
@@ -485,6 +539,7 @@ try {
     $filesTotal = @($mdFiles | Where-Object { $_ }).Count
     $filesSkipped = New-Object System.Collections.ArrayList
     $linesScanned = 0
+    $filesScanned = 0
 
     $issues = New-Object System.Collections.ArrayList
     $warnings = New-Object System.Collections.ArrayList
@@ -530,6 +585,7 @@ try {
         }
         $lines = $text -split "`r?`n"
         $linesScanned += $lines.Count
+        $filesScanned += 1
         $dateHits = 0
         $contentLines = New-Object System.Collections.Generic.List[string]
         $contentLineNumbers = New-Object System.Collections.Generic.List[int]
@@ -592,38 +648,47 @@ try {
                     if ($referenceMatch.Value -match '[<>*]') { continue }
                     if ($referenceMatch.Value -match '(?i)https?://') { continue }
                     $reference = $referenceMatch.Value
-                    $target = Join-Path $repo $reference
-                    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    $resolved = Resolve-RepoReference $rel $reference
+                    if ($resolved.State -eq 'outside' -or $resolved.State -eq 'invalid') {
+                        Add-ReferenceSkip "stale-reference-$($resolved.State)"
+                        continue
+                    }
+                    if ($resolved.State -eq 'missing') {
                         [void]$issues.Add([pscustomobject]@{
                                 Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
                                 Message  = '引用的路径不存在'
-                                Detail   = "「$reference」不存在；改成实际文件，或删除这条引用"
+                                Detail   = "「$($resolved.RepoRelative)」不存在；改成实际文件，或删除这条引用"
                             })
                     }
                 }
                 foreach ($referenceMatch in [regex]::Matches($line, $reStaleLineReference)) {
                     $reference = $referenceMatch.Value
                     $referencePath = $reference.Substring(0, $reference.LastIndexOf(':'))
-                    $target = Join-Path $repo $referencePath
-                    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    $resolved = Resolve-RepoReference $rel $referencePath
+                    if ($resolved.State -eq 'outside' -or $resolved.State -eq 'invalid') {
+                        Add-ReferenceSkip "stale-reference-$($resolved.State)"
+                        continue
+                    }
+                    if ($resolved.State -eq 'missing') {
                         [void]$issues.Add([pscustomobject]@{
                                 Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
                                 Message  = '引用的路径不存在'
-                                Detail   = "「$reference」不存在；改成实际文件，或删除这条引用"
+                                Detail   = "「$($resolved.RepoRelative):$($referenceMatch.Groups[1].Value)」不存在；改成实际文件，或删除这条引用"
                             })
                         continue
                     }
                     try {
-                        $referencedLines = @([IO.File]::ReadAllLines($target, [Text.Encoding]::UTF8))
+                        $referencedLines = @([IO.File]::ReadAllLines($resolved.Target, [Text.Encoding]::UTF8))
                     } catch {
-                        $referencedLines = @()
+                        Add-ReferenceSkip 'stale-reference-unreadable'
+                        continue
                     }
                     $referencedLine = [int]$referenceMatch.Groups[1].Value
                     if ($referencedLine -gt $referencedLines.Count) {
                         [void]$issues.Add([pscustomobject]@{
                                 Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'stale-reference'
                                 Message  = '引用的行号超出文件范围'
-                                Detail   = "「$reference」超过实际 $($referencedLines.Count) 行；改成存在的行号，或去掉行号"
+                                Detail   = "「$($resolved.RepoRelative):$referencedLine」超过实际 $($referencedLines.Count) 行；改成存在的行号，或去掉行号"
                             })
                     }
                 }
@@ -800,7 +865,7 @@ try {
             rules          = $rulesFile
             coverage       = [ordered]@{
                 files_total   = $filesTotal
-                files_scanned = $filesTotal - @($filesSkipped).Count
+                files_scanned = $filesScanned
                 files_skipped = @($filesSkipped | Sort-Object path, reason)
                 lines_scanned = $linesScanned
                 categories    = $stats
