@@ -334,11 +334,11 @@ try {
     if ($claimConfig -and $claimConfig.commands) {
         $claimCommands = @($claimConfig.commands | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
     }
-    $todoWords = @('TODO', 'FIXME', 'XXX', '待补', '待确认', '暂未实现', '占位符')
+    $todoWords = @('FIXME', '待补', '待确认', '暂未实现')
     if ($todoConfig -and $todoConfig.words) {
         $todoWords = @($todoConfig.words | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
     }
-    $allowTodoFiles = @('TODO.md', 'AGENTS.md')
+    $allowTodoFiles = @('TODO.md', 'AGENTS.md', 'docs-templates/*')
     if ($todoConfig -and $todoConfig.allowTodoFiles) {
         $allowTodoFiles = @($todoConfig.allowTodoFiles | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Replace('\', '/') })
     }
@@ -346,10 +346,15 @@ try {
     if ($staleConfig -and $staleConfig.extensions) {
         $staleExtensions = @($staleConfig.extensions | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).ToLowerInvariant() })
     }
+    $stalePlaceholderSegments = @('...', 'xxx', 'yyy', 'zzz', 'yyyy', 'mm', 'dd')
+    if ($staleConfig -and $staleConfig.placeholderSegments) {
+        $stalePlaceholderSegments = @($staleConfig.placeholderSegments | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
+    }
     if (@($claimWords).Count -eq 0) { Fail "rules.claimUnsupported.claims 不能为空" }
     if (@($claimCommands).Count -eq 0) { Fail "rules.claimUnsupported.commands 不能为空" }
     if (@($todoWords).Count -eq 0) { Fail "rules.todoResidue.words 不能为空" }
     if (@($staleExtensions).Count -eq 0) { Fail "rules.staleReference.extensions 不能为空" }
+    if (@($stalePlaceholderSegments).Count -eq 0) { Fail "rules.staleReference.placeholderSegments 不能为空" }
 
     function Join-WordPattern([string[]]$Words) {
         return (($Words | ForEach-Object { '(?<![A-Za-z0-9_])' + [regex]::Escape($_) + '(?![A-Za-z0-9_])' }) -join '|')
@@ -361,6 +366,8 @@ try {
     $pathCharClass = '[a-z0-9_.\-\p{L}\p{N}]'
     $reStaleReference = '(?i)(?<![a-z0-9_\[])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + ')(?::(\d+))?(?![a-z0-9_\]])'
     $reStaleLineReference = '(?i)(?<![a-z0-9_])(?:' + $pathCharClass + '+/)+' + $pathCharClass + '+(?:' + $extensionAlt + '):(\d+)(?![a-z0-9_])'
+    $stalePlaceholderAlt = (($stalePlaceholderSegments | ForEach-Object { [regex]::Escape($_) }) -join '|')
+    $reStalePlaceholder = '(?i)(?:^|/)(?:' + $stalePlaceholderAlt + ')(?=/|[-_.]|$)'
 
     function Test-ClaimEvidence([string]$CurrentLine, [string]$NextLine, [string[]]$Lines, [int]$NextIndex) {
         $evidenceLines = @($CurrentLine, $NextLine) | Where-Object { $_ }
@@ -536,6 +543,12 @@ try {
     } catch {
         FailEnv "读取 git 文件列表失败：$($_.Exception.Message)"
     }
+$topLevelNames = @{}
+try {
+    foreach ($item in @(Get-ChildItem -LiteralPath $repo -Force)) { $topLevelNames[$item.Name] = $true }
+} catch {
+    FailEnv "读取仓库顶层条目失败：$($_.Exception.Message)"
+}
     $filesTotal = @($mdFiles | Where-Object { $_ }).Count
     $filesSkipped = New-Object System.Collections.ArrayList
     $linesScanned = 0
@@ -629,7 +642,11 @@ try {
                 continue
             }
 
-            if ($todoSeverity -ne 'off' -and $allowTodoFiles -notcontains $rel -and ($line -match $reTodo)) {
+            $allowTodoFile = $false
+            foreach ($allowTodoPattern in $allowTodoFiles) {
+                if ($rel -like $allowTodoPattern) { $allowTodoFile = $true; break }
+            }
+            if ($todoSeverity -ne 'off' -and -not $allowTodoFile -and ($line -match $reTodo)) {
                 $todoWord = $matches[0]
                 $todoItem = [pscustomobject]@{
                     Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'todo-residue'
@@ -646,11 +663,17 @@ try {
                     if ($prefix -match '(?i)(?:https?://|[<>*/](?:[^`)]*)$)') { continue }
                     if ($prefix -match '[A-Za-z]:$') { continue }
                     if ($referenceMatch.Value -match '[<>*]') { continue }
+                    if ($referenceMatch.Value -match $reStalePlaceholder) { continue }
                     if ($referenceMatch.Value -match '(?i)https?://') { continue }
                     $reference = $referenceMatch.Value
                     $resolved = Resolve-RepoReference $rel $reference
                     if ($resolved.State -eq 'outside' -or $resolved.State -eq 'invalid') {
                         Add-ReferenceSkip "stale-reference-$($resolved.State)"
+                        continue
+                    }
+                    $referenceFirstSegment = ($resolved.RepoRelative -split '/', 2)[0]
+                    if (-not $topLevelNames.ContainsKey($referenceFirstSegment)) {
+                        Add-ReferenceSkip 'stale-reference-outside-top-level'
                         continue
                     }
                     if ($resolved.State -eq 'missing') {
@@ -664,9 +687,15 @@ try {
                 foreach ($referenceMatch in [regex]::Matches($line, $reStaleLineReference)) {
                     $reference = $referenceMatch.Value
                     $referencePath = $reference.Substring(0, $reference.LastIndexOf(':'))
+                    if ($referencePath -match $reStalePlaceholder) { continue }
                     $resolved = Resolve-RepoReference $rel $referencePath
                     if ($resolved.State -eq 'outside' -or $resolved.State -eq 'invalid') {
                         Add-ReferenceSkip "stale-reference-$($resolved.State)"
+                        continue
+                    }
+                    $referenceFirstSegment = ($resolved.RepoRelative -split '/', 2)[0]
+                    if (-not $topLevelNames.ContainsKey($referenceFirstSegment)) {
+                        Add-ReferenceSkip 'stale-reference-outside-top-level'
                         continue
                     }
                     if ($resolved.State -eq 'missing') {

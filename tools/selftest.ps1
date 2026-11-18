@@ -234,10 +234,18 @@ The current guide was verified on 03/05/2026.
 
 这里允许写：待补。
 '@
+    Set-FixtureFile $bad 'docs-templates/template.md' @'
+# Template
+
+示例模板可以说：待补。
+'@
     Set-FixtureFile $bad 'vps/README.md' @'
 # VPS
 
 Reference target.
+'@
+    Set-FixtureFile $bad 'device/README.md' @'
+# Device
 '@
     Set-FixtureFile $bad 'stale-reference.md' @'
 # Stale reference
@@ -254,6 +262,13 @@ vps/README.md:99999 行号越界。
 [存在](../../vps/README.md)
 [缺失](../../vps/missing.md)
 [越界](../../../etc/passwd)
+[机器路径](service.d/x.sh)
+[机器配置](data/config/a.json)
+[模板占位](vps/xxx.md)
+[模板日期](docs/YYYY-MM-DD-x.md)
+[真实第一段缺失](device/missing-target.md)
+[真实泛指文件缺失](vps/zzz9.md)
+[真实中文文件缺失](vps/真实缺失.md)
 '@
     Set-FixtureFile $bad 'claim-evidence.md' @'
 # Evidence
@@ -317,6 +332,10 @@ done
     Check 'audit-docs：上级相对链接不崩且真实文件不报' ($r.Text -notmatch 'vps/README\.md」不存在') $r.Text
     Check 'audit-docs：上级相对缺失链接报归一化路径' ($r.Text -match 'vps/missing\.md」不存在') $r.Text
     Check 'audit-docs：越界引用跳过且不误报' ($r.Text -notmatch 'etc/passwd') $r.Text
+    Check 'audit-docs：第一段不在仓库顶层的机器路径不报' ($r.Text -notmatch 'service\.d/x\.sh|data/config/a\.json') $r.Text
+    Check 'audit-docs：第一段真实的缺失引用仍报' (($r.Text -match 'device/missing-target\.md」不存在') -and ($r.Text -match 'vps/zzz9\.md」不存在') -and ($r.Text -match 'vps/真实缺失\.md」不存在')) $r.Text
+    Check 'audit-docs：模板路径含占位日期不报' ($r.Text -notmatch 'vps/xxx\.md|docs/YYYY') $r.Text
+    Check 'audit-docs：docs-templates 的待办说明不报' ($r.Text -notmatch 'docs-templates/template\.md .*待补') $r.Text
 
     # ── 3) 配置/词表坏了必须 exit 1，不许假绿 ─────────────────────
     Write-Host "`n  ── 配置与判据失败（必须 exit 1，不许退回内置规则）──" -ForegroundColor Cyan
