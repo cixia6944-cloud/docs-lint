@@ -251,6 +251,8 @@ vps/README.md:99999 行号越界。
     Set-FixtureFile $bad 'claim-evidence.md' @'
 # Evidence
 
+迁移已完成。
+这一节待补。
 已修复：git log 里的 0123456789abcdef。
 已修复：https://example.com/deploy-log
 已修复：guide.md:3
@@ -296,7 +298,9 @@ done
     Check 'audit-docs：历史缺日期给了提示' ($r.Text -match '没有任何日期') $r.Text
     Check 'audit-docs：表格里的日期没有误报' ($r.Text -notmatch 'table dates are allowed') $r.Text
     Check 'audit-docs：报出无证据的完成性表述' ($r.Text -match '这条声称「已修复」') $r.Text
+    Check 'audit-docs：中文行文里的完成性表述也报' ($r.Text -match '这条声称「已修复」') $r.Text
     Check 'audit-docs：报出正文待办残留' ($r.Text -match 'todo-residue') $r.Text
+    Check 'audit-docs：中文行文里的待办也报' ($r.Text -match '「待补」仍留在正文') $r.Text
     Check 'audit-docs：TODO.md 允许待办' ($r.Text -notmatch 'TODO\.md .*待补') $r.Text
     Check 'audit-docs：报出不存在的文件引用' ($r.Text -match 'vps/不存在\.md') $r.Text
     Check 'audit-docs：真实文件引用不报' ($r.Text -notmatch 'vps/README\.md:1') $r.Text
@@ -404,8 +408,19 @@ done
     $factObj = $null
     try { $factObj = Get-Content -LiteralPath (Join-Path $root 'block-fact-pack.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
     Check 'blockOn=fact：heuristic error 降级 warn 且 exit 0' ($rFact.Code -eq 0 -and $factObj -and @($factObj.findings | Where-Object { $_.kind -eq 'heuristic' -and $_.severity -eq 'warn' }).Count -gt 0) $rFact.Text
+    $rJsonFact = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $blockFact, '-Json')
+    $jsonFact = $null
+    try { $jsonFact = $rJsonFact.Text | ConvertFrom-Json } catch { }
+    Check 'blockOn=fact：-Json 的 ok/exit/进程码一致为通过' ($rJsonFact.Code -eq 0 -and $jsonFact.ok -eq $true -and $jsonFact.exit_code -eq 0) $rJsonFact.Text
     $rAll = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config)
     Check 'blockOn=all：heuristic error 维持阻断' ($rAll.Code -eq 1) ("exit=$($rAll.Code) " + $rAll.Text)
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"(?:off|warn|error)"', '"dateStyle":"error"'
+    $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
+    Write-JsonFile $blockAll $configText
+    $rJsonAll = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $blockAll, '-Json')
+    $jsonAll = $null
+    try { $jsonAll = $rJsonAll.Text | ConvertFrom-Json } catch { }
+    Check 'blockOn=all：-Json 的 ok/exit/进程码一致为失败' ($rJsonAll.Code -eq 1 -and $jsonAll.ok -eq $false -and $jsonAll.exit_code -eq 1) $rJsonAll.Text
 
     $bPack = Join-Path $root 'rules-pack.json'
     $rB = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $bPack)

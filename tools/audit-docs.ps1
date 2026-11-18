@@ -352,7 +352,7 @@ try {
     if (@($staleExtensions).Count -eq 0) { Fail "rules.staleReference.extensions 不能为空" }
 
     function Join-WordPattern([string[]]$Words) {
-        return (($Words | ForEach-Object { '(?<![\p{L}\p{N}])' + [regex]::Escape($_) + '(?![\p{L}\p{N}])' }) -join '|')
+        return (($Words | ForEach-Object { '(?<![A-Za-z0-9_])' + [regex]::Escape($_) + '(?![A-Za-z0-9_])' }) -join '|')
     }
     $reClaim = Join-WordPattern $claimWords
     $reClaimCommand = Join-WordPattern $claimCommands
@@ -815,6 +815,13 @@ try {
         $payload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $FactPack -Encoding UTF8
     }
 
+    $blockingIssues = if ($blockOn -eq 'fact') {
+        @($issues | Where-Object { (Get-FindingKind $_.Rule) -eq 'fact' })
+    } else {
+        @($issues)
+    }
+    $exitCode = if ($blockingIssues.Count -eq 0) { 0 } else { 1 }
+
     if ($Json) {
         $allItems = New-Object System.Collections.ArrayList
         foreach ($i in $issues) {
@@ -837,7 +844,6 @@ try {
                     detail   = $w.Detail
                 })
         }
-        $exitCode = if ($issues.Count -eq 0) { 0 } else { 1 }
         $payload = [ordered]@{
             schema_version = $SCHEMA_VERSION
             tool           = 'audit-docs'
@@ -859,12 +865,6 @@ try {
     if ($FailOnNew -and $Baseline) {
         if ($baselineInfo -and $baselineInfo.added.Count -gt 0) { exit 1 }
         if ($baselineInfo) { exit 0 }
-    }
-
-    $blockingIssues = if ($blockOn -eq 'fact') {
-        @($issues | Where-Object { (Get-FindingKind $_.Rule) -eq 'fact' })
-    } else {
-        @($issues)
     }
 
     if (-not $Quiet) {
