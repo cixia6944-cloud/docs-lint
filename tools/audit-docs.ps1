@@ -54,6 +54,15 @@
 .PARAMETER Json
     只输出一行机器可读 JSON，不打印人话。
 
+.PARAMETER FactPack
+    把可 diff 的稳定事实包写到指定 JSON 文件；stdout 保持原有输出。
+
+.PARAMETER Baseline
+    与上一次 -FactPack 按 finding id 比对，并把结果写进本次事实包。
+
+.PARAMETER FailOnNew
+    与 -Baseline 搭配：只有出现新 finding id 时才因基线差异 exit 1。
+
 .PARAMETER Quiet
     不打印分类统计与提示（违规明细照打）。
 
@@ -67,6 +76,9 @@ param(
     [string]$Config,
     [string]$Rules,
     [switch]$Json,
+    [string]$FactPack,
+    [string]$Baseline,
+    [switch]$FailOnNew,
     [switch]$Quiet
 )
 
@@ -294,6 +306,11 @@ try {
     $dateCap = 8
     if ($null -ne $configDoc.dateCap) { $dateCap = [int]$configDoc.dateCap }
 
+    $blockOn = if ($configDoc.blockOn) { ([string]$configDoc.blockOn).ToLowerInvariant() } else { 'fact' }
+    if (@('fact', 'all') -notcontains $blockOn) {
+        Fail "配置里的 blockOn 无效：$blockOn（只允许 fact/all）"
+    }
+
     $untrackedMode = if ($configDoc.untracked) { [string]$configDoc.untracked } else { 'error' }
     if (@('error', 'warn', 'ignore') -notcontains $untrackedMode) {
         Fail "配置里的 untracked 无效：$untrackedMode（只允许 error/warn/ignore）"
@@ -304,6 +321,29 @@ try {
             foreach ($m in $c.Matchers) {
                 if ($m.IsMatch($rel)) { return $c }
             }
+        }
+        return $null
+    }
+
+    $factRules = @('missing-on-disk', 'untracked', 'encoding-suspect', 'no-category')
+    function Get-FindingKind([string]$Rule) {
+        if ($factRules -contains $Rule) { return 'fact' }
+        return 'heuristic'
+    }
+
+    function Get-FindingId([string]$File, [string]$Rule, [string]$Detail) {
+        $normalized = ($Detail.Trim() -replace '\s+', ' ')
+        $bytes = [Text.Encoding]::UTF8.GetBytes($File + '|' + $Rule + '|' + $normalized)
+        $hash = [Security.Cryptography.SHA1]::HashData($bytes)
+        return (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+    }
+
+    function Get-FindingVerify([string]$Rule, [string]$File, [int]$Line, [string]$Detail) {
+        switch ($Rule) {
+            'missing-on-disk' { return 'Test-Path -LiteralPath "' + ($File -replace '"', '`"') + '"' }
+            'untracked' { return 'git ls-files --error-unmatch -- "' + ($File -replace '"', '`"') + '"' }
+            'no-category' { return 'Select-String -Path "' + $configPath + '" -Pattern "categories"' }
+            'date-style' { return 'Select-String -Path "' + $File + '" -Pattern "' + (($Detail -split ' → ')[0] -replace '"', '`"') + '"' }
         }
         return $null
     }
@@ -330,6 +370,9 @@ try {
     } catch {
         FailEnv "读取 git 文件列表失败：$($_.Exception.Message)"
     }
+    $filesTotal = @($mdFiles | Where-Object { $_ }).Count
+    $filesSkipped = New-Object System.Collections.ArrayList
+    $linesScanned = 0
 
     $issues = New-Object System.Collections.ArrayList
     $warnings = New-Object System.Collections.ArrayList
@@ -341,6 +384,7 @@ try {
         $path = Join-Path $repo $rel
         $cat = Get-Category $rel
         if ($null -eq $cat) {
+            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'no-category' })
             [void]$issues.Add([pscustomobject]@{
                     Category = '?'; File = $rel; Line = 0; Rule = 'no-category'
                     Message  = '没有匹配的分类'
@@ -349,6 +393,7 @@ try {
             continue
         }
         if (-not (Test-Path -LiteralPath $path)) {
+            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'missing-on-disk' })
             [void]$issues.Add([pscustomobject]@{
                     Category = $cat.Name; File = $rel; Line = 0; Rule = 'missing-on-disk'
                     Message  = 'git 里有记录，磁盘上没这个文件'
@@ -363,6 +408,7 @@ try {
         try {
             $text = $strictUtf8.GetString($bytes)
         } catch {
+            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'encoding-suspect' })
             [void]$issues.Add([pscustomobject]@{
                     Category = $cat.Name; File = $rel; Line = 0; Rule = 'encoding-suspect'
                     Message  = '文件不是严格 UTF-8'
@@ -371,6 +417,7 @@ try {
             continue
         }
         $lines = $text -split "`r?`n"
+        $linesScanned += $lines.Count
         $dateHits = 0
         $inFence = $false
         $fenceMarker = $null
@@ -495,6 +542,90 @@ try {
     }
 
     # ---------- 输出 ----------
+    $factFindings = New-Object System.Collections.ArrayList
+    foreach ($i in $issues) {
+        $kind = Get-FindingKind $i.Rule
+        $severity = 'error'
+        if ($blockOn -eq 'fact' -and $kind -eq 'heuristic') { $severity = 'warn' }
+        [void]$factFindings.Add([ordered]@{
+            id       = (Get-FindingId $i.File $i.Rule $i.Detail)
+            kind     = $kind
+            rule     = $i.Rule
+            severity = $severity
+            category = $i.Category
+            file     = $i.File
+            line     = [int]$i.Line
+            message  = $i.Message
+            detail   = $i.Detail
+            fix      = $null
+            verify   = (Get-FindingVerify $i.Rule $i.File ([int]$i.Line) $i.Detail)
+        })
+    }
+    foreach ($w in $warnings) {
+        [void]$factFindings.Add([ordered]@{
+            id       = (Get-FindingId $w.File $w.Rule $w.Detail)
+            kind     = (Get-FindingKind $w.Rule)
+            rule     = $w.Rule
+            severity = 'warn'
+            category = (Get-Category $w.File).Name
+            file     = $w.File
+            line     = [int]$w.Line
+            message  = $w.Rule
+            detail   = $w.Detail
+            fix      = $null
+            verify   = $null
+        })
+    }
+    $factFindings = @($factFindings | Sort-Object file, line, rule, id)
+    $factTotals = [ordered]@{
+        fact      = @($factFindings | Where-Object { $_.kind -eq 'fact' }).Count
+        heuristic = @($factFindings | Where-Object { $_.kind -eq 'heuristic' }).Count
+        by_severity = [ordered]@{
+            error = @($factFindings | Where-Object { $_.severity -eq 'error' }).Count
+            warn  = @($factFindings | Where-Object { $_.severity -eq 'warn' }).Count
+        }
+    }
+    $baselineInfo = $null
+    if ($Baseline) {
+        if (-not (Test-Path -LiteralPath $Baseline)) { Fail "找不到基线事实包：$Baseline" }
+        try { $baselineDoc = Get-Content -LiteralPath $Baseline -Raw -Encoding UTF8 | ConvertFrom-Json }
+        catch { Fail "基线事实包解析失败：$Baseline — $($_.Exception.Message)" }
+        $baselineIds = @($baselineDoc.findings | ForEach-Object { $_.id })
+        $currentIds = @($factFindings | ForEach-Object { $_.id })
+        $added = @($currentIds | Where-Object { $baselineIds -notcontains $_ })
+        $fixed = @($baselineIds | Where-Object { $currentIds -notcontains $_ })
+        $baselineInfo = [ordered]@{
+            path      = $Baseline
+            added     = $added
+            fixed     = $fixed
+            remaining = $currentIds.Count
+        }
+    }
+    if ($FactPack) {
+        $rulesRun = @('badword', 'date-nosource', 'date-style', 'date-density', 'untracked', 'no-category', 'missing-on-disk', 'encoding-suspect')
+        $payload = [ordered]@{
+            schema_version = 1
+            tool           = 'audit-docs'
+            repo           = $repo
+            config         = $configPath
+            rules          = $rulesFile
+            coverage       = [ordered]@{
+                files_total   = $filesTotal
+                files_scanned = $filesTotal - @($filesSkipped).Count
+                files_skipped = @($filesSkipped | Sort-Object path, reason)
+                lines_scanned = $linesScanned
+                categories    = $stats
+                rules_run     = $rulesRun
+            }
+            findings = $factFindings
+            totals   = $factTotals
+        }
+        if ($baselineInfo) { $payload['baseline'] = $baselineInfo }
+        $factDir = Split-Path -Parent $FactPack
+        if ($factDir -and -not (Test-Path -LiteralPath $factDir)) { New-Item -ItemType Directory -Force -Path $factDir | Out-Null }
+        $payload | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $FactPack -Encoding UTF8
+    }
+
     if ($Json) {
         $allItems = New-Object System.Collections.ArrayList
         foreach ($i in $issues) {
@@ -536,6 +667,17 @@ try {
         exit $exitCode
     }
 
+    if ($FailOnNew -and $Baseline) {
+        if ($baselineInfo -and $baselineInfo.added.Count -gt 0) { exit 1 }
+        if ($baselineInfo) { exit 0 }
+    }
+
+    $blockingIssues = if ($blockOn -eq 'fact') {
+        @($issues | Where-Object { (Get-FindingKind $_.Rule) -eq 'fact' })
+    } else {
+        @($issues)
+    }
+
     if (-not $Quiet) {
         $summary = ($stats.Keys | ForEach-Object { "$_ $($stats[$_])" }) -join ' / '
         Write-Host ""
@@ -548,15 +690,18 @@ try {
         }
     }
 
-    if ($issues.Count -eq 0) {
+    if ($blockingIssues.Count -eq 0) {
         Write-Host "  OK  分类与日期规则均合规" -ForegroundColor Green
         Write-Host ""
+        if ($Baseline -and $baselineInfo) {
+            Write-Host "  基线：新增 $($baselineInfo.added.Count)，修复 $($baselineInfo.fixed.Count)，现存 $($baselineInfo.remaining)" -ForegroundColor Cyan
+        }
         exit 0
     }
 
-    Write-Host "  发现 $($issues.Count) 处不合规：" -ForegroundColor Yellow
+    Write-Host "  发现 $($blockingIssues.Count) 处不合规：" -ForegroundColor Yellow
     Write-Host ""
-    $issues | Group-Object File | ForEach-Object {
+    $blockingIssues | Group-Object File | ForEach-Object {
         Write-Host ("  " + $_.Name) -ForegroundColor White
         $_.Group | Sort-Object Line | ForEach-Object {
             $loc = if ($_.Line -gt 0) { "L$($_.Line)" } else { "--" }
@@ -567,6 +712,9 @@ try {
     Write-Host ""
     Write-Host "  规则见 $configPath" -ForegroundColor Cyan
     Write-Host ""
+    if ($Baseline -and $baselineInfo) {
+        Write-Host "  基线：新增 $($baselineInfo.added.Count)，修复 $($baselineInfo.fixed.Count)，现存 $($baselineInfo.remaining)" -ForegroundColor Cyan
+    }
     exit 1
 }
 finally { Pop-Location }

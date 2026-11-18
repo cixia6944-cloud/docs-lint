@@ -318,6 +318,50 @@ The current guide was verified on 03/05/2026.
     Check 'audit-docs：-Json 的 ok/exit_code 与进程退出码自洽' ([bool]($obj -and (-not $obj.ok) -and $obj.exit_code -eq 1 -and $r.Code -eq 1)) $r.Text
     Check 'audit-docs：-Json 里带 issues 明细' ([bool]($obj -and @($obj.issues).Count -ge 3)) $r.Text
 
+    # ── 4b) FactPack：稳定性 / id / 基线 / blockOn ─────────────────
+    Write-Host "`n  ── FactPack ──" -ForegroundColor Cyan
+    $fact1 = Join-Path $root 'facts-1.json'
+    $fact2 = Join-Path $root 'facts-2.json'
+    $r1 = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $fact1)
+    $r2 = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $fact2)
+    $hash1 = (Get-FileHash -LiteralPath $fact1 -Algorithm SHA256).Hash
+    $hash2 = (Get-FileHash -LiteralPath $fact2 -Algorithm SHA256).Hash
+    Check 'FactPack：同一仓库两次输出逐字节一致' ($r1.Code -eq $r2.Code -and $hash1 -eq $hash2) "$($r1.Code)/$($r2.Code) $hash1 $hash2"
+    $facts = $null
+    try { $facts = Get-Content -LiteralPath $fact1 -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    Check 'FactPack：schema_version=1 且 findings 排序稳定' ([bool]($facts -and $facts.schema_version -eq 1 -and $facts.tool -eq 'audit-docs')) $r1.Text
+    Check 'FactPack：没有时间戳或耗时字段' ((Get-Content -LiteralPath $fact1 -Raw -Encoding UTF8) -notmatch 'generated_at|elapsed|duration') $fact1
+    Check 'FactPack：coverage 与 totals 齐全' ([bool]($facts -and $facts.coverage.files_total -gt 0 -and $facts.coverage.lines_scanned -gt 0 -and $null -ne $facts.totals.by_severity.error)) $fact1
+
+    $baseline1 = Join-Path $root 'baseline-1.json'
+    $baseline2 = Join-Path $root 'baseline-2.json'
+    Set-FixtureFile $bad 'baseline-new.md' "# Baseline`n`n这一句带一个没有来源的日期：2026-03-05。`n"
+    Invoke-Git $bad @('add', '--', 'baseline-new.md') | Out-Null
+    $rNew = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $baseline1, '-Baseline', $fact1)
+    $newObj = $null
+    try { $newObj = Get-Content -LiteralPath $baseline1 -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    Check 'Baseline：新增 finding 正好 1 个' ($newObj -and $newObj.baseline.added.Count -eq 1) $baseline1
+
+    Remove-Item -LiteralPath (Join-Path $bad 'baseline-new.md') -Force
+    Invoke-Git $bad @('rm', '--cached', '-q', '--', 'baseline-new.md') | Out-Null
+    $rFixed = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-FactPack', $baseline2, '-Baseline', $baseline1)
+    $fixedObj = $null
+    try { $fixedObj = Get-Content -LiteralPath $baseline2 -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    Check 'Baseline：修复 finding 正好是刚才那条' ($fixedObj -and $fixedObj.baseline.fixed.Count -eq 1 -and $fixedObj.baseline.fixed[0] -eq $newObj.baseline.added[0]) $baseline2
+    Check 'Baseline：现存数量与当前 findings 一致' ($fixedObj -and $fixedObj.baseline.remaining -eq @($fixedObj.findings).Count) $baseline2
+
+    $blockFact = Join-Path $root 'block-fact.json'
+    $blockAll = Join-Path $root 'block-all.json'
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"blockOn"\s*:\s*"all"', '"blockOn":"fact"'
+    $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
+    Write-JsonFile $blockFact $configText
+    $rFact = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $blockFact, '-FactPack', (Join-Path $root 'block-fact-pack.json'))
+    $factObj = $null
+    try { $factObj = Get-Content -LiteralPath (Join-Path $root 'block-fact-pack.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    Check 'blockOn=fact：heuristic error 降级 warn 且 exit 0' ($rFact.Code -eq 0 -and $factObj -and @($factObj.findings | Where-Object { $_.kind -eq 'heuristic' -and $_.severity -eq 'warn' }).Count -gt 0) $rFact.Text
+    $rAll = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config)
+    Check 'blockOn=all：heuristic error 维持阻断' ($rAll.Code -eq 1) ("exit=$($rAll.Code) " + $rAll.Text)
+
     # ── 5) check-secrets：中文名、值不外泄、-Staged、-Exclude ──────
     Write-Host "`n  ── check-secrets（编码 / 输出 / 范围）──" -ForegroundColor Cyan
     $sec = New-FixtureRepo $root 'secrets'

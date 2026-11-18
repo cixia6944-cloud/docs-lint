@@ -1,6 +1,6 @@
 # docs-lint
 
-把「同一份文档里该不该出现历史叙述、日期有没有来源、文档是不是该拆了」这类机械规则，固化成可以在本地或 CI 里跑的检查器。
+给 reviewer Agent 生成结构化事实包：脚本负责结构、证据与可维护性，Agent 负责可用性判断。
 
 它面向任何用 Markdown 长期维护的文档库：产品手册、知识库、项目文档、个人笔记都可以。规则由配置驱动，不绑定某个仓库的目录约定。
 
@@ -41,14 +41,14 @@ pwsh -NoProfile -File tools/audit-docs.ps1 -Repo . -Json
 pwsh -NoProfile -File tools/audit-docs.ps1 -Repo . -Config path/to/config.json
 ```
 
-它会做四件事：
+它会生成一份可 diff 的事实包，供 reviewer Agent 判断。当前内置这些机械检查：
 
 1. **分类**：按路径 glob 把每篇文档分到 `current`、`history`、`data` 等类别。
 2. **违规词**：`checkBadWords` 为 true 的类别，用 `audit/rules.json` 的词表检查历史叙述词。
 3. **日期来源**：`datePolicy: sourced` 的类别，日期必须出现在允许的上下文里（文件头标记、验证行、表格、路径、行内代码）。
 4. **未跟踪文件**：内容照扫，并单独报一条 `untracked`，提醒你 `git add` 或加进 `.gitignore`。
 
-它不检查链接是否失效、不检查文档长度、不做拼写检查。那些是别的工具的事。
+`-FactPack <path>` 会把 `coverage / findings / totals` 写成稳定 JSON；`-Baseline <path>` 按稳定 id 对比上一份事实包，`-FailOnNew` 只对新增 finding 阻断。
 
 ### `tools/check-secrets.ps1`：凭据自查
 
