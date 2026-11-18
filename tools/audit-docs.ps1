@@ -183,6 +183,7 @@ try {
                 Patterns        = $patterns
                 Matchers        = $matchers
                 DatePolicy      = $policy
+                CheckDateStyle  = (Get-ConfigBool $c 'checkDateStyle' ($policy -eq 'sourced'))
                 CheckBadWords   = [bool]$c.checkBadWords
                 WarnIfNoDate    = [bool]$c.warnIfNoDate
                 WarnIfDateDense = [bool]$c.warnIfDateDense
@@ -372,19 +373,35 @@ try {
         $lines = $text -split "`r?`n"
         $dateHits = 0
         $inFence = $false
+        $fenceMarker = $null
 
         for ($i = 0; $i -lt $lines.Length; $i++) {
             $line = $lines[$i]
             # 代码块里是示例输出/命令，日期是数据不是叙事，跳过
-            if ($line.TrimStart().StartsWith('```')) { $inFence = -not $inFence; continue }
+            $trimmedFence = $line.TrimStart()
+            if (-not $inFence) {
+                if ($trimmedFence.StartsWith('```')) { $fenceMarker = '```' }
+                elseif ($trimmedFence.StartsWith('~~~')) { $fenceMarker = '~~~' }
+                if ($fenceMarker) {
+                    $inFence = $true
+                    continue
+                }
+            } elseif ($fenceMarker -and $trimmedFence.StartsWith($fenceMarker)) {
+                $inFence = $false
+                $fenceMarker = $null
+                continue
+            }
             if ($inFence) { continue }
             if (-not $line) { continue }
 
             $isHeader = ($i -lt $headerLines)
             $isTable = $line.TrimStart().StartsWith('|')
-            $dateMatches = [regex]::Matches($line, $reAnyDate, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            $hasDate = $dateMatches.Count -gt 0
-            if ($hasDate) { $dateHits += $dateMatches.Count }
+            $hasDate = $false
+            if ($line -match '\d') {
+                $dateMatches = [regex]::Matches($line, $reAnyDate, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                $hasDate = $dateMatches.Count -gt 0
+                if ($hasDate) { $dateHits += $dateMatches.Count }
+            }
 
             if ($cat.CheckBadWords -and $line -match $reBadWords) {
                 [void]$issues.Add([pscustomobject]@{
@@ -397,7 +414,8 @@ try {
 
             $allowed = $false
             $styleExempt = $false
-            if ($dateStyle -ne 'off') {
+            $hasDateSeparator = $hasDate -and ($line.Contains('/') -or $line.Contains('.'))
+            if ($dateStyle -ne 'off' -and $cat.CheckDateStyle -and $hasDateSeparator) {
                 $styleText = Mask-Matches $line $reDate
                 if ($allowPathDates -and $styleText -match '\.md' -and $styleText -match '[/\\]') { $styleExempt = $true }
                 if (-not $styleExempt -and $allowInlineCode -and ($styleText -match ('`[^`]*(?:' + $reSuspectDate + ')[^`]*`'))) { $styleExempt = $true }

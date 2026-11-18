@@ -200,6 +200,11 @@ History notes may carry dates without further context.
 
 This history file has no date at all.
 '@
+    Set-FixtureFile $bad 'history/slash-date.md' @'
+# Log excerpt
+
+2026/10/30 从日志里抄来的记录。
+'@
     Set-FixtureFile $bad 'date-style.md' @'
 # Date style
 
@@ -212,6 +217,11 @@ The current guide was verified on 03/05/2026.
 ```text
 围栏里的 2026/03/05 不判。
 ```
+
+~~~text
+波浪围栏里的 2026/03/05 不判。
+```不应关闭波浪围栏。
+~~~
 '@
     $encodingFile = Join-Path $bad 'encoding-suspect.md'
     Write-Utf16Fixture $encodingFile "This file is intentionally not UTF-8.`n"
@@ -240,6 +250,8 @@ The current guide was verified on 03/05/2026.
     Check 'audit-docs：2026年3月5日不报' ($r.Text -notmatch '2026年3月5日') $r.Text
     Check 'audit-docs：date-style 给出可执行改写' ($r.Text -match '03/05/2026 → 2026-03-05') $r.Text
     Check 'audit-docs：行内代码与围栏里的可疑日期不报' ($r.Text -notmatch '行内代码里的|围栏里的') $r.Text
+    Check 'audit-docs：波浪围栏里的可疑日期不报' ($r.Text -notmatch '波浪围栏里的') $r.Text
+    Check 'audit-docs：free 分类里的斜杠日期不报' ($r.Text -notmatch '2026/10/30') $r.Text
     Check 'audit-docs：报出编码可疑的文件' ($r.Text -match 'encoding-suspect') $r.Text
     Check 'audit-docs：编码可疑文件不再当内容检查' ($r.Text -notmatch 'intentionally not UTF-8') $r.Text
     Check 'audit-docs：报出未跟踪的 .md' ($r.Text -match '未跟踪的 \.md') $r.Text
@@ -282,14 +294,14 @@ The current guide was verified on 03/05/2026.
     $dateStyleRepo = New-FixtureRepo $root 'date-style-only'
     Set-FixtureFile $dateStyleRepo 'date-style.md' "2026/03/05 实测通过`n"
     Invoke-Git $dateStyleRepo @('add', '-A') | Out-Null
-    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"error"', '"dateStyle":"warn"'
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"(?:off|warn|error)"', '"dateStyle":"warn"'
     $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
     Write-JsonFile $dateStyleWarn $configText
     $r = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $dateStyleWarn)
     Check 'dateStyle=warn：可疑日期只提示且 exit 0' ($r.Code -eq 0 -and $r.Text -match '2026/03/05 → 2026-03-05') ("exit=$($r.Code) " + $r.Text)
 
     $dateStyleError = Join-Path $root 'date-style-error.json'
-    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"error"', '"dateStyle":"error"'
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"(?:off|warn|error)"', '"dateStyle":"error"'
     $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
     Write-JsonFile $dateStyleError $configText
     $r = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $dateStyleError, '-Json')

@@ -138,11 +138,11 @@ pwsh -NoProfile -File tools/selftest.ps1
   - 含 `.md` 且带路径分隔符的行（`allowPathDates`）；
   - 行内代码里的日期（`allowInlineCode`）。
 
-  不认识的常见日期写法（`MM/DD/YYYY`、`YYYY/M/D`、`D.M.YYYY`、无补零 ISO、英文月份格式）会报 `date-style`，要求统一成 `YYYY-MM-DD` 或 `YYYY年M月`。这比把工具不认识的日期当成「没有日期」更诚实，也能防止检查范围悄悄缩水。
+  不认识的常见日期写法（`MM/DD/YYYY`、`YYYY/M/D`、`D.M.YYYY`、无补零 ISO、英文月份格式）会报 `date-style`，要求统一成 `YYYY-MM-DD` 或 `YYYY年M月`。`date-style` 只作用于 `sourced` 分类；若某个分类要单独开关，配置分类级 `checkDateStyle`。
 - `free`：日期不受限。适合历史、数据、排障记录。
 - `ignore`：完全不检查日期。适合 README、元文档、fixture。
 
-代码块（三反引号围起来的部分）里的日期一律跳过，那里的日期是示例数据。
+代码块（``` 或 ~~~ 围起来的部分，且结束标记必须使用相同字符）里的日期一律跳过，那里的日期是示例数据。
 
 所有参与内容检查的 Markdown 必须是严格 UTF-8。解码失败会报 `encoding-suspect`，该文件不参与后续内容检查；先转码再复查，避免乱码被静默当成合规。
 
@@ -152,7 +152,7 @@ pwsh -NoProfile -File tools/selftest.ps1
 
 ### `dateStyle`
 
-控制可疑日期写法的处理方式：
+控制 `sourced` 分类里可疑日期写法的处理方式（分类级 `checkDateStyle` 默认跟随 `datePolicy`）：
 
 - `off`：不检查；
 - `warn`（默认）：进 `warnings`，不阻断；
