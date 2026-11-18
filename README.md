@@ -103,6 +103,7 @@ pwsh -NoProfile -File tools/selftest.ps1
     "allowInlineCode": true,
     "allowBlockquoteHeader": true
   },
+  "dateStyle": "warn",
   "dateCap": 8,
   "untracked": "error",
   "rulesFile": "audit/rules.json"
@@ -148,6 +149,16 @@ pwsh -NoProfile -File tools/selftest.ps1
 ### `dateRules`
 
 日期上下文的启发式判据。`headerMarkers` 和 `verifyWords` 按字面量匹配（会转义正则元字符），大小写不敏感。如果你们的文档习惯用 `Last updated:`、`Reviewed on` 之类，改这里就行，不用改代码。
+
+### `dateStyle`
+
+控制可疑日期写法的处理方式：
+
+- `off`：不检查；
+- `warn`（默认）：进 `warnings`，不阻断；
+- `error`：进 `issues`，exit 1。
+
+可疑写法先在剩余文本里匹配，已识别的规范日期会先被等长抹除，避免 `2026-11-18` 被 `2026-11` 污染。`date-style` 复用围栏、行内代码和 `.md` 路径行的豁免；同一行仍会继续执行日期来源判定。提示会直接给出改写结果，例如 `2026/03/05 → 2026-03-05`。
 
 ### `dateCap`
 

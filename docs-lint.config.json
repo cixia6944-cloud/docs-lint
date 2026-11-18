@@ -53,6 +53,8 @@
     "allowInlineCode": true,
     "allowBlockquoteHeader": true
   },
+  "_日期格式": "dateStyle 控制可疑日期写法的处理方式：off=不检查；warn=提示且不阻断；error=报错并 exit 1。行内代码、围栏和 .md 路径行不判。",
+  "dateStyle": "error",
   "dateCap": 8,
   "untracked": "error",
   "rulesFile": "audit/rules.json"

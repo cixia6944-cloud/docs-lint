@@ -232,9 +232,53 @@ try {
         $allowBlockquoteHeader = Get-ConfigBool $dateRules 'allowBlockquoteHeader' $true
     }
 
-    $reDate = '20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?|20\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)|20\d{2}\s*年\s*\d{1,2}\s*月'
+    $reDate = '20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?|20\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)|20\d{2}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?'
     $reSuspectDate = '(?<!\d)(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/20\d{2}(?!\d)|(?<!\d)20\d{2}/(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])(?!\d)|(?<!\d)(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.20\d{2}(?!\d)|(?<!\d)20\d{2}-(?:[1-9]|1[0-2])(?:-(?:[1-9]|[12]\d|3[01]))?(?!\d)|(?<!\d)(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?,?\s+20\d{2}(?!\d)|(?<!\d)(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?,?\s+20\d{2}(?!\d)'
     $reAnyDate = '(?:' + $reDate + ')|(?:' + $reSuspectDate + ')'
+    $dateStyle = if ($configDoc.dateStyle) { ([string]$configDoc.dateStyle).ToLowerInvariant() } else { 'warn' }
+    if (@('off', 'warn', 'error') -notcontains $dateStyle) {
+        Fail "配置里的 dateStyle 无效：$dateStyle（只允许 off/warn/error）"
+    }
+
+    function Mask-Matches([string]$Text, [string]$Pattern) {
+        $builder = New-Object System.Text.StringBuilder
+        $cursor = 0
+        foreach ($m in [regex]::Matches($Text, $Pattern)) {
+            [void]$builder.Append($Text.Substring($cursor, $m.Index - $cursor))
+            [void]$builder.Append(' ', $m.Length)
+            $cursor = $m.Index + $m.Length
+        }
+        [void]$builder.Append($Text.Substring($cursor))
+        return $builder.ToString()
+    }
+
+    function ConvertTo-CanonicalDate([string]$Value) {
+        $monthNames = @{
+            'jan' = 1; 'feb' = 2; 'mar' = 3; 'apr' = 4; 'may' = 5; 'jun' = 6
+            'jul' = 7; 'aug' = 8; 'sep' = 9; 'oct' = 10; 'nov' = 11; 'dec' = 12
+        }
+        if ($Value -match '^(?<month>0?[1-9]|1[0-2])/(?<day>0?[1-9]|[12]\d|3[01])/(?<year>20\d{2})$') {
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, [int]$matches.month, [int]$matches.day
+        }
+        if ($Value -match '^(?<year>20\d{2})/(?<month>0?[1-9]|1[0-2])/(?<day>0?[1-9]|[12]\d|3[01])$') {
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, [int]$matches.month, [int]$matches.day
+        }
+        if ($Value -match '^(?<day>0?[1-9]|[12]\d|3[01])\.(?<month>0?[1-9]|1[0-2])\.(?<year>20\d{2})$') {
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, [int]$matches.month, [int]$matches.day
+        }
+        if ($Value -match '^(?<year>20\d{2})-(?<month>[1-9]|1[0-2])-(?<day>[1-9]|[12]\d|3[01])$') {
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, [int]$matches.month, [int]$matches.day
+        }
+        if ($Value -match '^(?<month>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?<day>0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?,?\s+(?<year>20\d{2})$') {
+            $month = $monthNames[$matches.month.ToLowerInvariant().Substring(0, 3)]
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, $month, [int]$matches.day
+        }
+        if ($Value -match '^(?<day>0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+(?<month>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?,?\s+(?<year>20\d{2})$') {
+            $month = $monthNames[$matches.month.ToLowerInvariant().Substring(0, 3)]
+            return '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, $month, [int]$matches.day
+        }
+        return $null
+    }
     $reHeaderMark = $null
     if ($headerMarkers.Count -gt 0) {
         $markerAlt = ($headerMarkers | ForEach-Object { [regex]::Escape($_) }) -join '|'
@@ -351,18 +395,37 @@ try {
                 continue
             }
 
-            if ($cat.DatePolicy -eq 'sourced' -and $line -match $reSuspectDate) {
-                [void]$issues.Add([pscustomobject]@{
-                        Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'date-style'
-                        Message  = '日期写法不是工具支持的规范格式'
-                        Detail   = "统一改成 YYYY-MM-DD 或 YYYY年M月后再检查来源：$($line.Trim() -replace '\s+', ' ')"
-                    })
-                continue
+            $allowed = $false
+            $styleExempt = $false
+            if ($dateStyle -ne 'off') {
+                $styleText = Mask-Matches $line $reDate
+                if ($allowPathDates -and $styleText -match '\.md' -and $styleText -match '[/\\]') { $styleExempt = $true }
+                if (-not $styleExempt -and $allowInlineCode -and ($styleText -match ('`[^`]*(?:' + $reSuspectDate + ')[^`]*`'))) { $styleExempt = $true }
+                if (-not [bool]$styleExempt) {
+                    $styleMatches = @([regex]::Matches($styleText, $reSuspectDate, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase))
+                    if ($styleMatches.Count -gt 0) { $styleMatch = $styleMatches[0] } else { $styleMatch = $null }
+                    if ($styleMatch) {
+                        $canonical = ConvertTo-CanonicalDate $styleMatch.Value
+                        $detail = if ($canonical) { "$($styleMatch.Value) → $canonical" } else { "无法转换日期写法：$($styleMatch.Value)" }
+                        $item = [pscustomobject]@{
+                            Category = $cat.Name; File = $rel; Line = ($i + 1); Rule = 'date-style'
+                            Message  = '日期写法需要统一'
+                            Detail   = $detail
+                        }
+                        if ($dateStyle -eq 'error') {
+                            [void]$issues.Add($item)
+                        } else {
+                            [void]$warnings.Add([pscustomobject]@{
+                                    File = $rel; Line = ($i + 1); Rule = 'date-style'
+                                    Detail = $detail
+                                })
+                        }
+                    }
+                }
             }
 
             if ($cat.DatePolicy -ne 'sourced' -or -not $hasDate) { continue }
 
-            $allowed = $false
             if ($isHeader) {
                 if ($allowBlockquoteHeader -and $line.TrimStart().StartsWith('>')) { $allowed = $true }
                 elseif ($reHeaderMark -and ($line -match $reHeaderMark)) { $allowed = $true }
@@ -370,7 +433,7 @@ try {
             if (-not $allowed -and $reVerify -and ($line -match $reVerify)) { $allowed = $true }
             if (-not $allowed -and $allowTableRows -and $isTable) { $allowed = $true }
             if (-not $allowed -and $allowPathDates -and ($line -match '\.md' -and $line -match '[/\\]')) { $allowed = $true }
-            if (-not $allowed -and $allowInlineCode -and ($line -match ('`[^`]*' + $reDate + '[^`]*`'))) { $allowed = $true }
+            if (-not $allowed -and $allowInlineCode -and ($line -match ('`[^`]*' + $reAnyDate + '[^`]*`'))) { $allowed = $true }
 
             if (-not $allowed) {
                 [void]$issues.Add([pscustomobject]@{

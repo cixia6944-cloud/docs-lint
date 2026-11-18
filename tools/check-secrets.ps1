@@ -60,6 +60,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "[×] 找不到 git，无法确定扫描范围" -ForegroundColor Red
     exit 2
 }
+$git = (Get-Command git -ErrorAction Stop).Source
 if (-not (Test-Path -LiteralPath $root)) {
     Write-Host "[×] 仓库目录不存在：$root" -ForegroundColor Red
     exit 2
@@ -159,14 +160,54 @@ try {
 
     $hits = New-Object System.Collections.ArrayList
     $scanned = 0
+    $gb18030Count = 0
+    $gb18030Files = New-Object System.Collections.ArrayList
+    $encodingSuspects = New-Object System.Collections.ArrayList
     foreach ($f in $files) {
         $norm = $f -replace '\\', '/'
         if (Test-Excluded $norm) { continue }
         if ($norm -match '\.(png|jpg|jpeg|gif|webp|ico|zip|gz|tgz|7z|pdf|exe|dll)$') { continue }
         if ($Staged) {
-            $text = Get-GitText -ArgList @('show', ":$f")
+            $tempFile = Join-Path ([IO.Path]::GetTempPath()) ("docs-lint-staged-" + [Guid]::NewGuid().ToString('N') + ".bin")
+            try {
+                $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $processInfo.FileName = $git
+                $processInfo.Arguments = 'show ":0:' + ($f -replace '"', '\"') + '"'
+                $processInfo.WorkingDirectory = $root
+                $processInfo.RedirectStandardOutput = $true
+                $processInfo.UseShellExecute = $false
+                $stream = [IO.File]::Create($tempFile)
+                try {
+                    $process = [System.Diagnostics.Process]::Start($processInfo)
+                    $process.StandardOutput.BaseStream.CopyTo($stream)
+                    $process.WaitForExit()
+                    if ($process.ExitCode -ne 0) { throw "git show :$f 失败，exit=$($process.ExitCode)" }
+                } finally {
+                    if ($stream) { $stream.Dispose() }
+                    if ($process) { $process.Dispose() }
+                }
+                $bytes = [IO.File]::ReadAllBytes($tempFile)
+            } catch {
+                continue
+            } finally {
+                Remove-Item -LiteralPath $tempFile -ErrorAction SilentlyContinue
+            }
         } else {
-            $text = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+            try { $bytes = [IO.File]::ReadAllBytes((Join-Path $root $f)) } catch { continue }
+        }
+        $text = $null
+        try {
+            $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes)
+        } catch {
+            try {
+                $gb18030 = [Text.Encoding]::GetEncoding(936)
+                $text = $gb18030.GetString($bytes)
+                $gb18030Count++
+                [void]$gb18030Files.Add($norm)
+            } catch {
+                [void]$encodingSuspects.Add($norm)
+                continue
+            }
         }
         if (-not $text) { continue }
         # 二进制块按文本判没有意义（超长 base64 那条会乱报）
@@ -181,11 +222,23 @@ try {
     # 「零命中」不交代范围，是这个工具最贵的那种谎。
     $scope = if ($Staged) { "扫描 $scanned 个暂存文件" } else { "扫描 $scanned 个已跟踪文件" }
     $missing = $fileTotal - $files.Count
+    if ($gb18030Count -gt 0) { $scope = $scope + "，其中 $gb18030Count 个不是 UTF-8，已按 GB18030 解码" }
+    if ($encodingSuspects.Count -gt 0) { $scope = $scope + "，$($encodingSuspects.Count) 个编码可疑（不参与内容扫描）" }
     if ($missing -gt 0) { $scope = $scope + "（git 记录 $fileTotal 个，$missing 个在磁盘上不存在）" }
     $skipped = @($files).Count - $scanned
     if ($skipped -gt 0) { $scope = $scope + "，跳过 $skipped 个（工具自身/排除项/二进制/读不到）" }
 
     if ($hits.Count -eq 0) {
+        if ($gb18030Count -gt 0) {
+            Write-Host "! 未发现疑似凭据，但有文件编码可疑（$scope）" -ForegroundColor Yellow
+            $gb18030Files | ForEach-Object { Write-Host ("  encoding-suspect  $_（已按 GB18030 解码并扫描）") -ForegroundColor DarkYellow }
+            exit 1
+        }
+        if ($encodingSuspects.Count -gt 0) {
+            Write-Host "× 文件编码无法可靠解码（$scope）" -ForegroundColor Red
+            $encodingSuspects | ForEach-Object { Write-Host ("  encoding-suspect  $_") -ForegroundColor DarkYellow }
+            exit 1
+        }
         Write-Host "✓ 未发现疑似凭据（$scope）" -ForegroundColor Green
         exit 0
     }
@@ -197,6 +250,16 @@ try {
     $hits | Group-Object File | ForEach-Object {
         Write-Host ("  " + $_.Name) -ForegroundColor Yellow
         $_.Group | ForEach-Object { Write-Host ("      L{0,-5} {1}" -f $_.Line, $_.Rule) -ForegroundColor DarkGray }
+    }
+    if ($encodingSuspects.Count -gt 0) {
+        Write-Host ""
+        Write-Host "文件编码无法可靠解码：" -ForegroundColor Yellow
+        $encodingSuspects | ForEach-Object { Write-Host ("  encoding-suspect  $_") -ForegroundColor DarkYellow }
+    }
+    if ($gb18030Count -gt 0) {
+        Write-Host ""
+        Write-Host "文件编码可疑，但已按 GB18030 解码并完成扫描：" -ForegroundColor Yellow
+        $gb18030Files | ForEach-Object { Write-Host ("  encoding-suspect  $_") -ForegroundColor DarkYellow }
     }
     if (-not $Quiet) {
         Write-Host ""

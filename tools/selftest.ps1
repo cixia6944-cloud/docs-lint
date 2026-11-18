@@ -107,6 +107,16 @@ function Write-Utf16Fixture {
     [IO.File]::WriteAllText($Path, $Text, [Text.Encoding]::Unicode)
 }
 
+function Write-GbkFixture {
+    param([string]$Path, [string]$Text)
+    try {
+        $encoding = [Text.Encoding]::GetEncoding(936)
+        [IO.File]::WriteAllText($Path, $Text, $encoding)
+    } catch {
+        throw "当前 .NET 运行时没有注册 GB18030（codepage 936）：$($_.Exception.Message)"
+    }
+}
+
 function New-FixtureRepo {
     param([string]$Root, [string]$Name)
     $p = Join-Path $Root $Name
@@ -172,6 +182,11 @@ History notes may carry dates without further context.
     Set-FixtureFile $bad 'guide.md' @'
 # Guide
 
+2026-11-18 实测通过
+2026-12-01 实测通过
+2026-01-05 实测通过
+2026年3月5日 实测通过
+
 这一行故意写历史叙述词：曾经是这样的。
 
 这一句故意带一个没有来源的日期：2026-03-05 改了配置。
@@ -189,6 +204,14 @@ This history file has no date at all.
 # Date style
 
 The current guide was verified on 03/05/2026.
+
+2026/03/05 是无来源且写法不规范的日期。
+
+行内代码里的 `2026/03/05` 不判。
+
+```text
+围栏里的 2026/03/05 不判。
+```
 '@
     $encodingFile = Join-Path $bad 'encoding-suspect.md'
     Write-Utf16Fixture $encodingFile "This file is intentionally not UTF-8.`n"
@@ -213,6 +236,10 @@ The current guide was verified on 03/05/2026.
     Check 'audit-docs：报出违规词' ($r.Text -match '曾经') $r.Text
     Check 'audit-docs：报出无来源日期' ($r.Text -match '无来源的日期') $r.Text
     Check 'audit-docs：报出不支持的日期格式' ($r.Text -match 'date-style') $r.Text
+    Check 'audit-docs：10-12 月规范日期不误报' ($r.Text -notmatch '2026-11-18|2026-12-01') $r.Text
+    Check 'audit-docs：2026年3月5日不报' ($r.Text -notmatch '2026年3月5日') $r.Text
+    Check 'audit-docs：date-style 给出可执行改写' ($r.Text -match '03/05/2026 → 2026-03-05') $r.Text
+    Check 'audit-docs：行内代码与围栏里的可疑日期不报' ($r.Text -notmatch '行内代码里的|围栏里的') $r.Text
     Check 'audit-docs：报出编码可疑的文件' ($r.Text -match 'encoding-suspect') $r.Text
     Check 'audit-docs：编码可疑文件不再当内容检查' ($r.Text -notmatch 'intentionally not UTF-8') $r.Text
     Check 'audit-docs：报出未跟踪的 .md' ($r.Text -match '未跟踪的 \.md') $r.Text
@@ -251,6 +278,23 @@ The current guide was verified on 03/05/2026.
     $r = Invoke-Tool @($audit, '-Repo', $good, '-Config', $noCat, '-Rules', $rules)
     Check '没有匹配分类 → exit 1（不静默跳过）' ($r.Code -eq 1 -and $r.Text -match '没有匹配的分类') ("exit=$($r.Code) " + $r.Text)
 
+    $dateStyleWarn = Join-Path $root 'date-style-warn.json'
+    $dateStyleRepo = New-FixtureRepo $root 'date-style-only'
+    Set-FixtureFile $dateStyleRepo 'date-style.md' "2026/03/05 实测通过`n"
+    Invoke-Git $dateStyleRepo @('add', '-A') | Out-Null
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"error"', '"dateStyle":"warn"'
+    $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
+    Write-JsonFile $dateStyleWarn $configText
+    $r = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $dateStyleWarn)
+    Check 'dateStyle=warn：可疑日期只提示且 exit 0' ($r.Code -eq 0 -and $r.Text -match '2026/03/05 → 2026-03-05') ("exit=$($r.Code) " + $r.Text)
+
+    $dateStyleError = Join-Path $root 'date-style-error.json'
+    $configText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"dateStyle"\s*:\s*"error"', '"dateStyle":"error"'
+    $configText = $configText -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
+    Write-JsonFile $dateStyleError $configText
+    $r = Invoke-Tool @($audit, '-Repo', $dateStyleRepo, '-Config', $dateStyleError, '-Json')
+    Check 'dateStyle=error：可疑日期进 issues 并阻断' ($r.Code -eq 1 -and $r.Text -match '"rule":"date-style"' -and $r.Text -match '"ok":false') $r.Text
+
     # ── 4) -Json 结构 ────────────────────────────────────────────
     Write-Host "`n  ── JSON 输出 ──" -ForegroundColor Cyan
     $r = Invoke-Tool @($audit, '-Repo', $bad, '-Config', $config, '-Json')
@@ -275,6 +319,8 @@ The current guide was verified on 03/05/2026.
     Set-FixtureFile $sec '凭据/中文名.md' ("## sample`n`n" + '"privateKey": "' + $fakePrivate + '"' + "`n")
     Set-FixtureFile $sec '凭据/中文口令.md' ('口令 `' + $fakeLabeled + '`' + "`n")
     Set-FixtureFile $sec '凭据/域名引用.md' ('密码管理器（`example.com`）' + "`n")
+    $gbkPath = Join-Path $sec '凭据/gbk-credential.md'
+    Write-GbkFixture $gbkPath '登录密码 `Abc12345x``'
     Invoke-Git $sec @('add', '-A') | Out-Null
     Invoke-Git $sec @('commit', '-q', '-m', 'fixture') | Out-Null
 
@@ -283,6 +329,7 @@ The current guide was verified on 03/05/2026.
     Check 'check-secrets：不打印命中原文' ($r.Text -notmatch [regex]::Escape($fakePrivate)) $r.Text
     Check 'check-secrets：中文标签后的真口令被报出' (($r.Code -eq 1) -and ($r.Text -match '中文口令\.md')) ("exit=$($r.Code) " + $r.Text)
     Check 'check-secrets：域名引用不误报' ($r.Text -notmatch '域名引用\.md') $r.Text
+    Check 'check-secrets：GBK 文件既报编码可疑也扫出口令' (($r.Code -eq 1) -and ($r.Text -match 'gbk-credential\.md') -and ($r.Text -match 'encoding-suspect') -and ($r.Text -match '已按 GB18030 解码')) $r.Text
 
     Set-FixtureFile $sec '凭据/staged.md' ('token=' + $fakeToken + "`n")
     Invoke-Git $sec @('add', '--', '凭据/staged.md') | Out-Null
