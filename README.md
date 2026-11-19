@@ -1,8 +1,57 @@
 # docs-lint
 
+[English](README.en.md)
+
 给 reviewer Agent 生成结构化事实包：脚本负责结构、证据与可维护性，Agent 负责可用性判断。
 
 它面向任何用 Markdown 长期维护的文档库：产品手册、知识库、项目文档、个人笔记都可以。规则由配置驱动，不绑定某个仓库的目录约定。
+
+---
+
+## 最小上手
+
+```powershell
+git clone https://github.com/cixia6944-cloud/docs-lint
+cd docs-lint
+cp docs-lint.config.example.json docs-lint.config.json
+pwsh tools/audit-docs.ps1 -Repo ../你的项目 -Config docs-lint.config.json -FactPack facts.json
+```
+
+把 `../你的项目` 换成你要检查的仓库路径。
+
+`facts.json` 不是给人看的，是给 reviewer Agent 看的——把它连同项目一起交给 Agent，让 Agent 去判断可用性。
+
+下面是一份真实输出裁剪后的样张：
+
+```json
+{
+  "coverage": {
+    "files_total": 10,
+    "files_scanned": 10,
+    "lines_scanned": 468,
+    "categories": { "docs": 10 }
+  },
+  "findings": [
+    {
+      "id": "7b42145551a8",
+      "kind": "fact",
+      "rule": "encoding-suspect",
+      "severity": "error",
+      "category": "docs",
+      "file": "fixtures/bad/encoding-suspect.md",
+      "line": 0,
+      "message": "文件不是严格 UTF-8",
+      "detail": "疑似其他编码；先转成 UTF-8，再让工具检查内容，避免乱码被静默当成合规",
+      "fix": "把文件转成严格 UTF-8 后重新检查",
+      "verify": null
+    }
+  ]
+}
+```
+
+- `-Baseline` 传入上一份 `facts.json`，输出新增和已修复的 `findings`；存量库先保存基线，再加 `-FailOnNew` 只拦新增问题。
+- `blockOn` 默认是 `fact`，只有事实型 error 会阻断；启发式 error 会降级为 warn，由 reviewer Agent 判断。
+- `datePolicy: sourced` 是严格选项，要求日期带上下文来源；别人项目起步用 `free`，跑顺后再收紧。
 
 ---
 
