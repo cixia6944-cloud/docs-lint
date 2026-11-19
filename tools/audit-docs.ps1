@@ -326,7 +326,7 @@ try {
     $todoSeverity = Get-ConfigSeverity $todoConfig 'severity' 'error'
     $staleSeverity = Get-ConfigSeverity $staleConfig 'severity' 'error'
 
-    $claimWords = @('已完成', '已修复', '已部署', '已上线', '实测通过', '验证过', '已解决', 'done', 'fixed', 'shipped')
+    $claimWords = @('已完成', '已修复', '已部署', '已上线', '实测通过', '验证过', '已解决', 'shipped')
     if ($claimConfig -and $claimConfig.claims) {
         $claimWords = @($claimConfig.claims | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { [string]$_ })
     }
@@ -350,6 +350,10 @@ try {
     if ($staleConfig -and $staleConfig.placeholderSegments) {
         $stalePlaceholderSegments = @($staleConfig.placeholderSegments | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
     }
+    $staleAllowFiles = @()
+    if ($staleConfig -and $staleConfig.allowFiles) {
+        $staleAllowFiles = @($staleConfig.allowFiles | Where-Object { $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Replace('\', '/') })
+    }
     if (@($claimWords).Count -eq 0) { Fail "rules.claimUnsupported.claims 不能为空" }
     if (@($claimCommands).Count -eq 0) { Fail "rules.claimUnsupported.commands 不能为空" }
     if (@($todoWords).Count -eq 0) { Fail "rules.todoResidue.words 不能为空" }
@@ -369,7 +373,7 @@ try {
     $stalePlaceholderAlt = (($stalePlaceholderSegments | ForEach-Object { [regex]::Escape($_) }) -join '|')
     $reStalePlaceholder = '(?i)(?:^|/)(?:' + $stalePlaceholderAlt + ')(?=/|[-_.]|$)'
 
-    function Test-ClaimEvidence([string]$CurrentLine, [string]$NextLine, [string[]]$Lines, [int]$NextIndex) {
+    function Test-ClaimEvidence([string]$CurrentLine, [string]$NextLine, [string[]]$Lines, [int]$NextIndex, [System.Text.RegularExpressions.Match]$ClaimMatch) {
         $evidenceLines = @($CurrentLine, $NextLine) | Where-Object { $_ }
         foreach ($evidenceLine in $evidenceLines) {
             if ($evidenceLine -match '(?i)https?://') { return $true }
@@ -377,6 +381,13 @@ try {
             if ($evidenceLine -match '(?i)\b[0-9a-f]{7,40}\b') { return $true }
             if ($evidenceLine -match ('`[^`]*(?:' + $reClaimCommand + ')[^`]*`')) { return $true }
         }
+        if ($line -match '(?i)(?:单测|单元测试|测试)\s*[0-9]+\s*/\s*[0-9]+') { return $true }
+        $claimEvidence = @([regex]::Matches($line, $reAnyDate, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
+            Where-Object { [Math]::Abs($_.Index - $ClaimMatch.Index) -le 10 })
+        if ($claimEvidence.Count -gt 0) { return $true }
+        $sectionEvidence = @([regex]::Matches($line, '见\s*§[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*') |
+            Where-Object { [Math]::Abs($_.Index - ($ClaimMatch.Index + $ClaimMatch.Length)) -le 10 })
+        if ($sectionEvidence.Count -gt 0) { return $true }
         if ($NextLine -and ($NextLine.TrimStart().StartsWith('```') -or $NextLine.TrimStart().StartsWith('~~~'))) {
             $fenceChar = if ($NextLine.TrimStart().StartsWith('```')) { '```' } else { '~~~' }
             for ($j = $NextIndex + 1; $j -lt $Lines.Count; $j++) {
@@ -413,11 +424,17 @@ try {
         return 'heuristic'
     }
 
+    $findingIdCounts = @{}
     function Get-FindingId([string]$File, [string]$Rule, [string]$Detail) {
         $normalized = ($Detail.Trim() -replace '\s+', ' ')
         $bytes = [Text.Encoding]::UTF8.GetBytes($File + '|' + $Rule + '|' + $normalized)
         $hash = [Security.Cryptography.SHA1]::HashData($bytes)
-        return (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+        $id = (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+        $key = $File + '|' + $Rule + '|' + $normalized
+        $count = [int]$findingIdCounts[$key] + 1
+        $findingIdCounts[$key] = $count
+        if ($count -gt 1) { $id += "-$count" }
+        return $id
     }
 
     function Get-FindingVerify([string]$Rule, [string]$File, [int]$Line, [string]$Detail) {
@@ -518,7 +535,7 @@ try {
 
     function Add-ReferenceSkip {
         param([string]$Reason)
-        [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = $Reason })
+        $skippedReferences[$Reason] = [int]$skippedReferences[$Reason] + 1
     }
 
     # git 吐的是 UTF-8。core.quotepath=false 防止中文名变成 "\344\270\255"，
@@ -551,6 +568,7 @@ try {
 }
     $filesTotal = @($mdFiles | Where-Object { $_ }).Count
     $filesSkipped = New-Object System.Collections.ArrayList
+    $skippedReferences = [ordered]@{}
     $linesScanned = 0
     $filesScanned = 0
 
@@ -564,7 +582,6 @@ try {
         $path = Join-Path $repo $rel
         $cat = Get-Category $rel
         if ($null -eq $cat) {
-            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'no-category' })
             [void]$issues.Add([pscustomobject]@{
                     Category = '?'; File = $rel; Line = 0; Rule = 'no-category'
                     Message  = '没有匹配的分类'
@@ -573,7 +590,6 @@ try {
             continue
         }
         if (-not (Test-Path -LiteralPath $path)) {
-            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'missing-on-disk' })
             [void]$issues.Add([pscustomobject]@{
                     Category = $cat.Name; File = $rel; Line = 0; Rule = 'missing-on-disk'
                     Message  = 'git 里有记录，磁盘上没这个文件'
@@ -588,15 +604,19 @@ try {
         try {
             $text = $strictUtf8.GetString($bytes)
         } catch {
-            [void]$filesSkipped.Add([ordered]@{ path = $rel; reason = 'encoding-suspect' })
             [void]$issues.Add([pscustomobject]@{
                     Category = $cat.Name; File = $rel; Line = 0; Rule = 'encoding-suspect'
                     Message  = '文件不是严格 UTF-8'
                     Detail   = '疑似其他编码；先转成 UTF-8，再让工具检查内容，避免乱码被静默当成合规'
                 })
+            $filesScanned += 1
             continue
         }
         $lines = $text -split "`r?`n"
+        $fileNameDate = $null
+        if ((Split-Path -Leaf $rel) -match '(?<year>20\d{2})[._-]?(?<month>0?[1-9]|1[0-2])[._-]?(?<day>0?[1-9]|[12]\d|3[01])(?=[._-]|$)') {
+            $fileNameDate = '{0:D4}-{1:D2}-{2:D2}' -f [int]$matches.year, [int]$matches.month, [int]$matches.day
+        }
         $linesScanned += $lines.Count
         $filesScanned += 1
         $dateHits = 0
@@ -656,10 +676,16 @@ try {
                 if ($todoSeverity -eq 'error') { [void]$issues.Add($todoItem) } else { [void]$warnings.Add([pscustomobject]@{ File = $rel; Line = $realLineNumber; Rule = 'todo-residue'; Detail = $todoItem.Detail }) }
             }
 
-            if ($staleSeverity -ne 'off') {
+            $allowStaleFile = $false
+            foreach ($allowStalePattern in $staleAllowFiles) {
+                if ($rel -like $allowStalePattern) { $allowStaleFile = $true; break }
+            }
+
+            if ($staleSeverity -ne 'off' -and $cat.DatePolicy -eq 'sourced' -and -not $allowStaleFile) {
                 foreach ($referenceMatch in [regex]::Matches($line, $reStaleReference)) {
                     if ($referenceMatch.Groups[1].Success) { continue }
                     $prefix = $line.Substring(0, $referenceMatch.Index)
+                    if ($prefix -match '(?:删除|删掉|移除|弃用)[^/]{0,10}$') { continue }
                     if ($prefix -match '(?i)(?:https?://|[<>*/](?:[^`)]*)$)') { continue }
                     if ($prefix -match '[A-Za-z]:$') { continue }
                     if ($referenceMatch.Value -match '[<>*]') { continue }
@@ -688,6 +714,8 @@ try {
                     $reference = $referenceMatch.Value
                     $referencePath = $reference.Substring(0, $reference.LastIndexOf(':'))
                     if ($referencePath -match $reStalePlaceholder) { continue }
+                    $prefix = $line.Substring(0, $referenceMatch.Index)
+                    if ($prefix -match '(?:删除|删掉|移除|弃用)[^/]{0,10}$') { continue }
                     $resolved = Resolve-RepoReference $rel $referencePath
                     if ($resolved.State -eq 'outside' -or $resolved.State -eq 'invalid') {
                         Add-ReferenceSkip "stale-reference-$($resolved.State)"
@@ -754,10 +782,19 @@ try {
             }
 
             if ($claimSeverity -ne 'off' -and $cat.DatePolicy -eq 'sourced' -and ($line -match $reClaim)) {
-                $claim = $matches[0]
+                $claimMatch = [regex]::Match($line, $reClaim)
+                $claim = $claimMatch.Value
+                $claimIndex = $claimMatch.Index
+                $before = $line.Substring(0, $claimIndex)
+                $after = $line.Substring($claimIndex + $claim.Length)
+                $quoted = (($before -match '`(?:(?!`)[\s\S])*$') -and ($after -match '^(?:(?!`)[\s\S])*`')) -or
+                    (($before -match '[「“](?:(?![」”])[\s\S])*$') -and ($after -match '^(?:(?![」”])[\s\S])*[」”]')) -or
+                    (($before -match '"(?:(?!")[\s\S])*$') -and ($after -match '^(?:(?!")[\s\S])*"'))
+                $metadata = ($before -match '(?:文案|标记|回读|aria-|=)\s*$') -or ($after -match '^\s*(?:文案|标记|回读|aria-|=)')
+                if ($quoted -or $metadata) { continue }
                 $nextIndex = $realLineNumber
                 $nextLine = if ($nextIndex -lt $lines.Count) { $lines[$nextIndex] } else { $null }
-                if (-not (Test-ClaimEvidence $line $nextLine $lines $nextIndex)) {
+                if (-not (Test-ClaimEvidence $line $nextLine $lines $nextIndex $claimMatch)) {
                     $claimDetail = "这条声称「$claim」，但没有命令输出 / 文件:行 / commit 作为证据"
                     $claimFix = "把可复现命令及其输出、来源文件:行或 commit hash 加到这一行或紧邻下一行"
                     if ($claimSeverity -eq 'error') {
@@ -774,6 +811,12 @@ try {
 
             if ($cat.DatePolicy -ne 'sourced' -or -not $hasDate) { continue }
 
+            if ($line.TrimStart() -match '^#{1,6}\s') { $allowed = $true }
+            if (-not $allowed -and $fileNameDate) {
+                $allowed = ($line -match [regex]::Escape($fileNameDate)) -or
+                    ($line -match ($fileNameDate -replace '-', '([._-]?)')) -or
+                    ($line -match (($fileNameDate -replace '-', '') -replace '^(\d{4})(\d{2})(\d{2})$', '$1[._-]?$2[._-]?$3'))
+            }
             if ($isHeader) {
                 if ($allowBlockquoteHeader -and $line.TrimStart().StartsWith('>')) { $allowed = $true }
                 elseif ($reHeaderMark -and ($line -match $reHeaderMark)) { $allowed = $true }
@@ -783,6 +826,10 @@ try {
             if (-not $allowed -and $allowPathDates -and ($line -match '\.md' -and $line -match '[/\\]')) { $allowed = $true }
             if (-not $allowed -and $allowInlineCode -and ($line -match ('`[^`]*' + $reAnyDate + '[^`]*`'))) { $allowed = $true }
 
+            if (-not $allowed) {
+                $dateLineIsHeader = $line.TrimStart() -match '^#{1,6}\s'
+                if (-not $dateLineIsHeader -and $fileNameDate -and $line.Contains($fileNameDate)) { $allowed = $true }
+            }
             if (-not $allowed) {
                 [void]$issues.Add([pscustomobject]@{
                         Category = $cat.Name; File = $rel; Line = $realLineNumber; Rule = 'date-nosource'
@@ -893,12 +940,13 @@ try {
             config         = $configPath
             rules          = $rulesFile
             coverage       = [ordered]@{
-                files_total   = $filesTotal
-                files_scanned = $filesScanned
-                files_skipped = @($filesSkipped | Sort-Object path, reason)
-                lines_scanned = $linesScanned
-                categories    = $stats
-                rules_run     = $rulesRun
+                files_total       = $filesTotal
+                files_scanned     = $filesScanned
+                files_skipped     = @($filesSkipped | Sort-Object path, reason)
+                skipped_references = $skippedReferences
+                lines_scanned     = $linesScanned
+                categories        = $stats
+                rules_run         = $rulesRun
             }
             findings = $factFindings
             totals   = $factTotals

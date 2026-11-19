@@ -60,20 +60,21 @@
     "claimUnsupported": {
       "_说明": "sourced 分类里出现 claims 中的完成性表述时，要求同/下一行有 commands、文件:行、commit、URL 或紧邻代码块输出作为证据锚。",
       "severity": "warn",
-      "claims": ["已完成", "已修复", "已部署", "已上线", "实测通过", "验证过", "已解决", "done", "fixed", "shipped"],
+      "claims": ["已完成", "已修复", "已部署", "已上线", "实测通过", "验证过", "已解决", "shipped"],
       "commands": ["pwsh", "git", "curl", "systemctl", "docker", "python", "npm", "dotnet"]
     },
     "todoResidue": {
       "_说明": "正文残留待办标记就报；severity 默认建议 warn，确认库内确实应阻断后可改 error。allowTodoFiles 是允许承载待办的文件名单，模板目录默认豁免。",
       "severity": "warn",
       "words": ["FIXME", "待补", "待确认", "暂未实现"],
-      "allowTodoFiles": ["TODO.md", "AGENTS.md", "docs-templates/*"]
+      "allowTodoFiles": ["TODO.md", "AGENTS.md", "docs-templates/*", "misc/review-*"]
     },
     "staleReference": {
-      "_说明": "检查文档里的仓库相对文件引用；第一段必须是仓库顶层真实存在的条目，文件不存在或行号超出实际范围才报。",
+      "_说明": "检查文档里的仓库相对文件引用；第一段必须是仓库顶层真实存在的条目，文件不存在或行号超出实际范围才报。allowFiles 允许审阅快照引用被审库里的路径。",
       "severity": "error",
       "extensions": [".md", ".ps1", ".py", ".sh", ".json", ".yml", ".yaml", ".txt"],
-      "placeholderSegments": ["...", "xxx", "yyy", "zzz", "yyyy", "mm", "dd"]
+      "placeholderSegments": ["...", "xxx", "yyy", "zzz", "yyyy", "mm", "dd"],
+      "allowFiles": ["misc/review-*"]
     }
   },
   "_阻断策略": "blockOn=fact 是默认值，只有事实型 error 阻断，启发式 error 只输出；all 则所有 error 都阻断。",

@@ -270,6 +270,11 @@ vps/README.md:99999 行号越界。
 [真实泛指文件缺失](vps/zzz9.md)
 [真实中文文件缺失](vps/真实缺失.md)
 '@
+    Set-FixtureFile $bad 'history/stale-reference.md' @'
+# History
+
+已删除 tools/removed.md 的旧入口。
+'@
     Set-FixtureFile $bad 'claim-evidence.md' @'
 # Evidence
 
@@ -283,6 +288,25 @@ vps/README.md:99999 行号越界。
 ok
 done
 ```
+'@
+    Set-FixtureFile $bad 'claim-negative.md' @'
+# Claim negatives
+
+引号里的「已完成」只是界面文案。
+回读 aria-label="任务点已完成" 只描述判定。
+已完成（2026-11-19），见 §1.2。
+单测 12/12 后判定已完成。
+'@
+    Set-FixtureFile $bad 'dated-header-20261119.md' @'
+# Dated note
+
+### 2.0 本机目录结构(2026-11-19 整合)
+'@
+    Set-FixtureFile $bad 'todo-duplicate.md' @'
+# Duplicate todos
+
+这一节待确认。
+这一节待确认。
 '@
     $encodingFile = Join-Path $bad 'encoding-suspect.md'
     Write-Utf16Fixture $encodingFile "This file is intentionally not UTF-8.`n"
@@ -329,6 +353,10 @@ done
     Check 'audit-docs：报出引用行号越界' ($r.Text -match 'vps/README\.md:99999') $r.Text
     Check 'audit-docs：URL、绝对路径和占位符引用不报' ($r.Text -notmatch 'https://example\.com|C:/tmp|是占位符') $r.Text
     Check 'audit-docs：有证据的完成性表述不报' ($r.Text -notmatch 'git log 里的|deploy-log|guide\.md:3|下面是命令输出') $r.Text
+    Check 'audit-docs：界面文案里的完成词不报' ($r.Text -notmatch '界面文案|任务点已完成') $r.Text
+    Check 'audit-docs：章节和单测证据不报' ($r.Text -notmatch 'claim-negative\.md\s+这条声称') $r.Text
+    Check 'audit-docs：标题日期视为有来源' ($r.Text -notmatch '本机目录结构') $r.Text
+    Check 'audit-docs：历史删除引用不报' ($r.Text -notmatch 'tools/removed\.md') $r.Text
     Check 'audit-docs：上级相对链接不崩且真实文件不报' ($r.Text -notmatch 'vps/README\.md」不存在') $r.Text
     Check 'audit-docs：上级相对缺失链接报归一化路径' ($r.Text -match 'vps/missing\.md」不存在') $r.Text
     Check 'audit-docs：越界引用跳过且不误报' ($r.Text -notmatch 'etc/passwd') $r.Text
@@ -410,7 +438,36 @@ done
     Check 'FactPack：schema_version=1 且 findings 排序稳定' ([bool]($facts -and $facts.schema_version -eq 1 -and $facts.tool -eq 'audit-docs')) $r1.Text
     Check 'FactPack：没有时间戳或耗时字段' ((Get-Content -LiteralPath $fact1 -Raw -Encoding UTF8) -notmatch 'generated_at|elapsed|duration') $fact1
     Check 'FactPack：coverage 与 totals 齐全' ([bool]($facts -and $facts.coverage.files_total -gt 0 -and $facts.coverage.lines_scanned -gt 0 -and $null -ne $facts.totals.by_severity.error)) $fact1
-    Check 'FactPack：files_scanned 不被引用级 skipped 吃掉' ($facts.coverage.files_scanned -eq ($facts.coverage.files_total - @($facts.coverage.files_skipped | Where-Object { $_.reason -eq 'encoding-suspect' }).Count)) $fact1
+    $encodingSkippedCount = @($facts.coverage.files_skipped | Where-Object { $_.reason -eq 'encoding-suspect' }).Count
+    Check 'FactPack：files_scanned 不被引用级 skipped 吃掉' ($facts.coverage.files_scanned -eq ($facts.coverage.files_total - $encodingSkippedCount)) $fact1
+    $skippedPaths = @($facts.coverage.files_skipped | ForEach-Object { $_.path })
+    $findingPaths = @($facts.findings | ForEach-Object { $_.file })
+    Check 'FactPack：files_skipped 与 findings 无交集' (@($skippedPaths | Where-Object { $findingPaths -contains $_ }).Count -eq 0) ($fact1 + ' skipped=' + ($skippedPaths -join ','))
+    Check 'FactPack：引用级 skip 单独聚合' ($null -ne $facts.coverage.skipped_references) $fact1
+
+    $duplicateRepo = New-FixtureRepo $root 'duplicate-id'
+    $duplicateConfig = Join-Path $root 'duplicate-config.json'
+    $duplicateText = [IO.File]::ReadAllText($config, [Text.Encoding]::UTF8) -replace '"rulesFile"\s*:\s*"audit/rules.json"', ('"rulesFile":"{0}"' -f ($rules -replace '\\', '\\'))
+    Write-JsonFile $duplicateConfig $duplicateText
+    Set-FixtureFile $duplicateRepo 'README.md' @'
+# Duplicate IDs
+
+这段需要待确认。
+这段需要待确认。
+'@
+    Invoke-Git $duplicateRepo @('add', '-A') | Out-Null
+    $duplicatePack1 = Join-Path $root 'duplicate-1.json'
+    $duplicatePack2 = Join-Path $root 'duplicate-2.json'
+    Invoke-Tool @($audit, '-Repo', $duplicateRepo, '-Config', $duplicateConfig, '-FactPack', $duplicatePack1) | Out-Null
+    $duplicateObj = Get-Content -LiteralPath $duplicatePack1 -Raw -Encoding UTF8 | ConvertFrom-Json
+    $duplicateIds = @($duplicateObj.findings | Where-Object { $_.file -eq 'README.md' -and $_.rule -eq 'todo-residue' } | Sort-Object line | ForEach-Object { $_.id })
+    Check 'FactPack：重复行内容生成唯一 id' ($duplicateIds.Count -eq 2 -and $duplicateIds[0] -ne $duplicateIds[1]) ($duplicateIds -join ',')
+    Set-FixtureFile $duplicateRepo 'README.md' ("# Duplicate IDs`n`n插入一。`n插入二。`n插入三。`n`n这段需要待确认。`n这段需要待确认。`n")
+    Invoke-Tool @($audit, '-Repo', $duplicateRepo, '-Config', $duplicateConfig, '-FactPack', $duplicatePack2) | Out-Null
+    $duplicateObj2 = Get-Content -LiteralPath $duplicatePack2 -Raw -Encoding UTF8 | ConvertFrom-Json
+    $duplicateIds2 = @($duplicateObj2.findings | Where-Object { $_.file -eq 'README.md' -and $_.rule -eq 'todo-residue' } | Sort-Object line | ForEach-Object { $_.id })
+    Check 'FactPack：插行后重复内容 id 不变' ($duplicateIds.Count -eq $duplicateIds2.Count -and $duplicateIds[0] -eq $duplicateIds2[0] -and $duplicateIds[1] -eq $duplicateIds2[1]) ((($duplicateIds + $duplicateIds2)) -join ',')
+    Check 'FactPack：全量 id 唯一率 100%' ($facts.findings.Count -eq @($facts.findings.id | Sort-Object -Unique).Count) $fact1
 
     $baseline1 = Join-Path $root 'baseline-1.json'
     $baseline2 = Join-Path $root 'baseline-2.json'
