@@ -22,6 +22,14 @@ pwsh -NoProfile -File tools/demo.ps1
 
 临时目录默认跑完删除；加 `-Keep` 可以保留现场。
 
+新项目从这里起步：
+
+```powershell
+pwsh -NoProfile -File tools/audit-docs.ps1 -Repo <你的仓库> -Config docs-lint.config.example.json -FactPack facts.json
+```
+
+`docs-lint.config.example.json` 是宽松起步档：单类 `docs`、三条新规则均为 `warn`、`blockOn=fact`。先跑顺并抽查事实包，再逐条收紧分类与规则；严格档长什么样，见本仓库的 `docs-lint.config.json`。审阅快照可用配置里的 `misc/review-*` 豁免 `todo-residue` 和 `stale-reference`，避免把被审库的样例路径当成当前库的真实问题。
+
 ---
 
 ## 两个工具
@@ -49,7 +57,7 @@ pwsh -NoProfile -File tools/audit-docs.ps1 -Repo . -Config path/to/config.json
 4. **证据与残留**：检查没有证据锚的完成性表述、正文 TODO、以及指向不存在文件或行号的引用。
 5. **未跟踪文件**：内容照扫，并单独报一条 `untracked`，提醒你 `git add` 或加进 `.gitignore`。
 
-`-FactPack <path>` 会把 `coverage / findings / totals` 写成稳定 JSON；`-Baseline <path>` 按稳定 id 对比上一份事实包，`-FailOnNew` 只对新增 finding 阻断。
+`-FactPack <path>` 会把 `coverage / findings / totals` 写成稳定 JSON；`coverage.files_skipped` 只记录未参与完整检查的文件，`coverage.skipped_references` 按原因聚合引用级跳过。`-Baseline <path>` 按稳定 id 对比上一份事实包，`-FailOnNew` 只对新增 finding 阻断。同一文件同一规则同一规范化内容的重复 finding 会得到 `-2`、`-3` 后缀的唯一 id，插行不会改变既有 id。
 
 ### `tools/check-secrets.ps1`：凭据自查
 

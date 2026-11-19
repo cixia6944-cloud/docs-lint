@@ -1,0 +1,40 @@
+{
+  "_说明": "新项目起步配置：先完整扫描并观察事实包，再逐条收紧分类和规则。",
+  "_用法": "pwsh -NoProfile -File tools/audit-docs.ps1 -Repo <你的仓库> -Config docs-lint.config.example.json -FactPack facts.json",
+  "categories": [
+    {
+      "name": "docs",
+      "match": ["*"],
+      "datePolicy": "free",
+      "checkBadWords": false
+    }
+  ],
+  "_日期格式": "dateStyle 控制可疑日期写法；新项目建议先 warn，确认团队口径后再收紧。",
+  "dateStyle": "warn",
+  "dateCap": 8,
+  "rules": {
+    "claimUnsupported": {
+      "_说明": "完成性表述缺证据锚时提示；先用 warn 抽查，再决定是否收紧。",
+      "severity": "warn",
+      "claims": ["已完成", "已修复", "已部署", "已上线", "实测通过", "验证过", "已解决", "shipped"],
+      "commands": ["pwsh", "git", "curl", "systemctl", "docker", "python", "npm", "dotnet"]
+    },
+    "todoResidue": {
+      "_说明": "正文残留待办标记时提示；TODO.md、AGENTS.md 和模板目录默认允许。",
+      "severity": "warn",
+      "words": ["FIXME", "待补", "待确认", "暂未实现"],
+      "allowTodoFiles": ["TODO.md", "AGENTS.md", "docs-templates/*"]
+    },
+    "staleReference": {
+      "_说明": "第一段必须是仓库顶层真实存在的条目；新项目建议先 warn 观察误报。",
+      "severity": "warn",
+      "extensions": [".md", ".ps1", ".py", ".sh", ".json", ".yml", ".yaml", ".txt"],
+      "placeholderSegments": ["...", "xxx", "yyy", "zzz", "yyyy", "mm", "dd"],
+      "allowFiles": []
+    }
+  },
+  "_阻断策略": "blockOn=fact 是默认值，只有事实型 error 阻断；all 才会阻断启发式 error。",
+  "blockOn": "fact",
+  "untracked": "warn",
+  "rulesFile": "audit/rules.json"
+}
